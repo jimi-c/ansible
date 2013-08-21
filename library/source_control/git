@@ -140,6 +140,35 @@ def reset(git_path, module, dest, force):
     cmd = "%s reset --hard HEAD" % (git_path,)
     return module.run_command(cmd, check_rc=True)
 
+def list_remotes(git_path, module, dest):
+    cmd = '%s remote show' % git_path
+    os.chdir(dest)
+    (rc, out, err) = module.run_command(cmd, check_rc=True)
+    return out.split('\n')
+
+def add_remote(git_path, module, remote, url, dest):
+    cmd = '%s remote add %s %s' % (git_path, remote, url)
+    os.chdir(dest)
+    return module.run_command(cmd, check_rc=True)
+
+def del_remote(git_path, module, remote, dest):
+    cmd = '%s remote rm %s' % (git_path, remote)
+    os.chdir(dest)
+    return module.run_command(cmd, check_rc=False)
+
+def get_repo_url(git_path, module, remote, dest):
+    cmd = '%s remote show -n %s' % (git_path, remote)
+    os.chdir(dest)
+    (rc, out, err) = module.run_command(cmd, check_rc=True)
+    lines = out.split('\n')
+    fetch_url_re = re.compile("^[ ]*Fetch URL\: (.*)$")
+    for line in lines:
+        try:
+            return fetch_url_re.match(line).groups()[0]
+        except:
+            continue
+    return None
+
 def get_remote_head(git_path, module, dest, version, remote):
     cmd = ''
     os.chdir(dest)
@@ -320,6 +349,23 @@ def main():
     gitconfig = os.path.join(dest, '.git', 'config')
 
     rc, out, err, status = (0, None, None, None)
+
+    if remote == 'origin':
+        # verify the repo specified is the origin's repo
+        # or is a remote, otherwise we need to add it to
+        # the list of remote repos in the working dest dir
+        found = False
+        for dest_remote in list_remotes(git_path, module, dest):
+            if repo == get_repo_url(git_path, module, dest_remote, dest):
+                found = True
+                break
+        if not found:
+            remote = "ansible_module_remote"
+            del_remote(git_path, module, remote, dest)
+            add_remote(git_path, module, remote, repo, dest)
+            (rc, out, err) = fetch(git_path, module, repo, dest, version, remote)
+            if rc != 0:
+                module.fail_json(msg=err)
 
     # if there is no git configuration, do a clone operation
     # else pull and switch the version
