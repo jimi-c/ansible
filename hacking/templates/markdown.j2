@@ -22,6 +22,7 @@ New in version @{ version_added }@.
 <th class="head">required</th>
 <th class="head">default</th>
 <th class="head">choices</th>
+<th class="head">aliases</th>
 <th class="head">comments</th>
 </tr>
 {% for (k,v) in options.iteritems()  %}
@@ -30,6 +31,7 @@ New in version @{ version_added }@.
 <td>{% if v.get('required', False) %}yes{% else %}no{% endif %}</td>
 <td>{% if v['default'] %}@{ v['default'] }@{% endif %}</td>
 <td><ul>{% for choice in v.get('choices',[]) -%}<li>@{ choice }@</li>{% endfor -%}</ul></td>
+<td>{% for alias in v.get('aliases',[]) -%}@{ alias }@</br>{% endfor -%}</td>
 <td>{% for desc in v.description -%}@{ desc | html_ify }@{% endfor -%}{% if v['version_added'] %} (added in Ansible @{v['version_added']}@){% endif %}</td>
 </tr>
 {% endfor %}

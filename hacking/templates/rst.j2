@@ -27,6 +27,7 @@
     <th class="head">required</th>
     <th class="head">default</th>
     <th class="head">choices</th>
+    <th class="head">aliases</th>
     <th class="head">comments</th>
     </tr>
     {% for k in option_keys %}
@@ -40,6 +41,7 @@
     {% else %}
     <td><ul>{% for choice in v.get('choices',[]) -%}<li>@{ choice }@</li>{% endfor -%}</ul></td>
     {% endif %}
+    <td>{% for alias in v.get('aliases',[]) -%}@{ alias }@</br>{% endfor -%}</td>
     <td>{% for desc in v.description -%}@{ desc | html_ify }@{% endfor -%}{% if v['version_added'] %} (added in Ansible @{v['version_added']}@){% endif %}</td>
     </tr>
     {% endfor %}
