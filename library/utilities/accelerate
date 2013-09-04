@@ -156,6 +156,8 @@ class ThreadedTCPServer(SocketServer.ThreadingTCPServer):
 
 class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
     def send_data(self, data):
+        data = json.dumps(data)
+        data = self.server.key.Encrypt(data)
         packed_len = struct.pack('Q', len(data))
         return self.request.sendall(packed_len + data)
 
@@ -174,27 +176,19 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
             if not d:
                 return None
             data += d
-        return data
+        try:
+            data = self.server.key.Decrypt(data)
+        except:
+            log("bad decrypt, skipping...")
+            send_data(dict(rc=1))
+            return None
+        return json.loads(data)
 
     def handle(self):
         while True:
-            #log("waiting for data")
             data = self.recv_data()
             if not data:
                 break
-            try:
-                #log("got data, decrypting")
-                data = self.server.key.Decrypt(data)
-                #log("decryption done")
-            except:
-                log("bad decrypt, skipping...")
-                data2 = json.dumps(dict(rc=1))
-                data2 = self.server.key.Encrypt(data2)
-                send_data(client, data2)
-                return
-
-            #log("loading json from the data")
-            data = json.loads(data)
 
             mode = data['mode']
             response = {}
@@ -205,9 +199,7 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
             elif mode == 'fetch':
                 response = self.fetch(data)
 
-            data2 = json.dumps(response)
-            data2 = self.server.key.Encrypt(data2)
-            self.send_data(data2)
+            self.send_data(response)
 
     def command(self, data):
         if 'cmd' not in data:
@@ -241,10 +233,8 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                 last = False
                 if fd.tell() >= fstat.st_size:
                     last = True
-                data = dict(data=base64.b64encode(data), last=last)
-                data = json.dumps(data)
-                data = self.server.key.Encrypt(data)
 
+                data = dict(data=base64.b64encode(data), last=last)
                 if self.send_data(data):
                     return dict(failed=True, stderr="failed to send data")
 
@@ -252,8 +242,6 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                 if not response:
                     log("failed to get a response, aborting")
                     return dict(failed=True, stderr="Failed to get a response from %s" % self.host)
-                response = self.server.key.Decrypt(response)
-                response = json.loads(response)
 
                 if response.get('failed',False):
                     log("got a failed response from the master")
@@ -289,16 +277,12 @@ class ThreadedTCPRequestHandler(SocketServer.BaseRequestHandler):
                 out = base64.b64decode(data['data'])
                 bytes += len(out)
                 out_fd.write(out)
-                response = json.dumps(dict())
-                response = self.server.key.Encrypt(response)
-                self.send_data(response)
+                self.send_data(dict())
                 if data['last']:
                     break
                 data = self.recv_data()
                 if not data:
                     raise ""
-                data = self.server.key.Decrypt(data)
-                data = json.loads(data)
         except:
             tb = traceback.format_exc()
             log("failed to put the file: %s" % tb)
