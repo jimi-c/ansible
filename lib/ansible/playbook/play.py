@@ -24,6 +24,7 @@ from ansible.playbook.task import Task
 import pipes
 import shlex
 import os
+from sets import Set
 
 class Play(object):
 
@@ -191,8 +192,27 @@ class Play(object):
                             if meta_data:
                                 allow_dupes = utils.boolean(meta_data.get('allow_duplicates',''))
 
+                        if "tags" in passed_vars:
+                            if len(Set(passed_vars["tags"]).intersection(Set(self.playbook.skip_tags))) > 0 or \
+                               len(Set(passed_vars["tags"]).intersection(Set(self.playbook.only_tags))) == 0:
+                                # one of the tags specified for this role was in the
+                                # skip list, or we're limiting the tags and it didn't 
+                                # match one, so we just skip it completely
+                                continue
+                                   
                         if not allow_dupes:
                             if dep in self.included_roles:
+                                # if tags are set from this role, merge them
+                                # into the tags list for the dependent role
+                                if "tags" in passed_vars:
+                                    for ir_dep in dep_stack:
+                                        if ir_dep[0] == dep:
+                                            if "tags" in ir_dep[2]:
+                                                ir_dep[2]["tags"] = list(set(ir_dep[2]["tags"] + passed_vars["tags"]))
+                                            else:
+                                                ir_dep[2]["tags"] = passed_vars["tags"].copy()
+                                # skip back to the top, since we don't want to
+                                # do anything else with this role
                                 continue
                             else:
                                 self.included_roles.append(dep)
