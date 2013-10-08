@@ -24,7 +24,6 @@ from ansible.playbook.task import Task
 import pipes
 import shlex
 import os
-from sets import Set
 
 class Play(object):
 
@@ -192,22 +191,17 @@ class Play(object):
                             if meta_data:
                                 allow_dupes = utils.boolean(meta_data.get('allow_duplicates',''))
 
-                        if not allow_dupes:
-                            if dep in self.included_roles:
-                                # if tags are set from this role, merge them
-                                # into the tags list for the dependent role
-                                if "tags" in passed_vars:
-                                    for ir_dep in dep_stack:
-                                        if ir_dep[0] == dep:
-                                            if "tags" in ir_dep[2]:
-                                                ir_dep[2]["tags"] = list(set(ir_dep[2]["tags"] + passed_vars["tags"]))
-                                            else:
-                                                ir_dep[2]["tags"] = passed_vars["tags"].copy()
-                                # skip back to the top, since we don't want to
-                                # do anything else with this role
-                                continue
-                            else:
-                                self.included_roles.append(dep)
+                        # if tags are set from this role, merge them
+                        # into the tags list for the dependent role
+                        if "tags" in passed_vars:
+                            for included_role_dep in dep_stack:
+                                included_dep_name = included_role_dep[0]
+                                included_dep_vars = included_role_dep[2]
+                                if included_dep_name == dep:
+                                    if "tags" in included_dep_vars:
+                                        included_dep_vars["tags"] = list(set(included_dep_vars["tags"] + passed_vars["tags"]))
+                                    else:
+                                        included_dep_vars["tags"] = passed_vars["tags"].copy()
 
                         dep_vars = utils.combine_vars(passed_vars, dep_vars)
                         dep_vars = utils.combine_vars(role_vars, dep_vars)
@@ -223,7 +217,6 @@ class Play(object):
                             dep_defaults_data = utils.parse_yaml_from_file(defaults)
                         if 'role' in dep_vars:
                             del dep_vars['role']
-                        self._build_role_dependencies([dep], dep_stack, passed_vars=dep_vars, level=level+1)
 
                         if "tags" in passed_vars:
                             if not self._is_valid_tag(passed_vars["tags"]):
@@ -231,6 +224,16 @@ class Play(object):
                                 # skip list, or we're limiting the tags and it didn't 
                                 # match one, so we just skip it completely
                                 continue
+
+                        if not allow_dupes:
+                            if dep in self.included_roles:
+                                # skip back to the top, since we don't want to
+                                # do anything else with this role
+                                continue
+                            else:
+                                self.included_roles.append(dep)
+
+                        self._build_role_dependencies([dep], dep_stack, passed_vars=dep_vars, level=level+1)
                         dep_stack.append([dep,dep_path,dep_vars,dep_defaults_data])
 
             # only add the current role when we're at the top level,
@@ -493,7 +496,9 @@ class Play(object):
         we only want (playbook.only_tags), or if it is not in the list of 
         tags we don't want (playbook.skip_tags).
         """
-        if len(Set(tag_list).intersection(Set(self.playbook.skip_tags))) > 0 or len(Set(tag_list).intersection(Set(self.playbook.only_tags))) == 0:
+        matched_skip_tags = set(tag_list) & set(self.playbook.skip_tags)
+        matched_only_tags = set(tag_list) & set(self.playbook.only_tags)
+        if len(matched_skip_tags) > 0 or (self.playbook.only_tags != ['all'] and len(matched_only_tags) == 0):
             return False
         return True
 
