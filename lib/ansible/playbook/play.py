@@ -192,14 +192,6 @@ class Play(object):
                             if meta_data:
                                 allow_dupes = utils.boolean(meta_data.get('allow_duplicates',''))
 
-                        if "tags" in passed_vars:
-                            if len(Set(passed_vars["tags"]).intersection(Set(self.playbook.skip_tags))) > 0 or \
-                               len(Set(passed_vars["tags"]).intersection(Set(self.playbook.only_tags))) == 0:
-                                # one of the tags specified for this role was in the
-                                # skip list, or we're limiting the tags and it didn't 
-                                # match one, so we just skip it completely
-                                continue
-                                   
                         if not allow_dupes:
                             if dep in self.included_roles:
                                 # if tags are set from this role, merge them
@@ -232,7 +224,15 @@ class Play(object):
                         if 'role' in dep_vars:
                             del dep_vars['role']
                         self._build_role_dependencies([dep], dep_stack, passed_vars=dep_vars, level=level+1)
+
+                        if "tags" in passed_vars:
+                            if not self._is_valid_tag(passed_vars["tags"]):
+                                # one of the tags specified for this role was in the
+                                # skip list, or we're limiting the tags and it didn't 
+                                # match one, so we just skip it completely
+                                continue
                         dep_stack.append([dep,dep_path,dep_vars,dep_defaults_data])
+
             # only add the current role when we're at the top level,
             # otherwise we'll end up in a recursive loop 
             if level == 0:
@@ -484,6 +484,18 @@ class Play(object):
                 x.tags.extend(self.tags)
 
         return results
+
+    # *************************************************
+
+    def _is_valid_tag(self, tag_list):
+        """
+        Check to see if the list of tags passed in is in the list of tags 
+        we only want (playbook.only_tags), or if it is not in the list of 
+        tags we don't want (playbook.skip_tags).
+        """
+        if len(Set(tag_list).intersection(Set(self.playbook.skip_tags))) > 0 or len(Set(tag_list).intersection(Set(self.playbook.only_tags))) == 0:
+            return False
+        return True
 
     # *************************************************
 
