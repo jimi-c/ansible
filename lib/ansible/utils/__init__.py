@@ -425,6 +425,22 @@ def role_yaml_parse(role):
         role["name"] = repo_url_to_role_name(role["src"])
     return role
 
+def resolve_main(basepath):
+    ''' flexibly handle variations in main filenames '''
+    # these filenames are acceptable:
+    mains = (
+             os.path.join(basepath, 'main'),
+             os.path.join(basepath, 'main.yml'),
+             os.path.join(basepath, 'main.yaml'),
+             os.path.join(basepath, 'main.json'),
+            )
+    if sum([os.path.isfile(x) for x in mains]) > 1:
+        raise errors.AnsibleError("found multiple main files at %s, only one allowed" % (basepath))
+    else:
+        for m in mains:
+            if os.path.isfile(m):
+                return m # exactly one main file
+        return mains[0] # zero mains (we still need to return something)
 
 def json_loads(data):
     ''' parse a JSON string and return a data structure '''

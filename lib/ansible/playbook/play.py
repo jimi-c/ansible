@@ -22,6 +22,7 @@ from ansible import utils
 from ansible import errors
 from ansible.playbook.task import Task
 from ansible.module_utils.splitter import split_args, unquote
+from ansible.playbook.role import Role
 import ansible.constants as C
 import pipes
 import shlex
@@ -36,7 +37,7 @@ class Play(object):
        'hosts', 'name', 'vars', 'default_vars', 'vars_prompt', 'vars_files',
        'handlers', 'remote_user', 'remote_port', 'included_roles', 'accelerate',
        'accelerate_port', 'accelerate_ipv6', 'sudo', 'sudo_user', 'transport', 'playbook',
-       'tags', 'gather_facts', 'serial', '_ds', '_handlers', '_tasks',
+       'tags', 'gather_facts', 'serial', '_ds', '_handlers', '_tasks', '_roles',
        'basedir', 'any_errors_fatal', 'roles', 'max_fail_pct', '_play_hosts', 'su', 'su_user',
        'vault_password', 'no_log',
     ]
@@ -44,11 +45,12 @@ class Play(object):
     # to catch typos and so forth -- these are userland names
     # and don't line up 1:1 with how they are stored
     VALID_KEYS = [
-       'hosts', 'name', 'vars', 'vars_prompt', 'vars_files',
-       'tasks', 'handlers', 'remote_user', 'user', 'port', 'include', 'accelerate', 'accelerate_port', 'accelerate_ipv6',
+       'hosts', 'name', 'vars', 'vars_prompt', 'vars_files', 'roles',
+       'tasks', 'handlers', 'remote_user', 'user', 'port', 'include',
+       'accelerate', 'accelerate_port', 'accelerate_ipv6',
        'sudo', 'sudo_user', 'connection', 'tags', 'gather_facts', 'serial',
-       'any_errors_fatal', 'roles', 'role_names', 'pre_tasks', 'post_tasks', 'max_fail_percentage',
-       'su', 'su_user', 'vault_password', 'no_log',
+       'any_errors_fatal', 'roles', 'role_names', 'pre_tasks', 'post_tasks',
+       'max_fail_percentage', 'su', 'su_user', 'vault_password', 'no_log',
     ]
 
     # *************************************************
@@ -66,7 +68,6 @@ class Play(object):
         self.playbook         = playbook
         self.vars             = self._get_vars()
         self.basedir          = basedir
-        self.roles            = ds.get('roles', None)
         self.tags             = ds.get('tags', None)
         self.vault_password   = vault_password
 
@@ -93,7 +94,7 @@ class Play(object):
 
         # now we load the roles into the datastructure
         self.included_roles = []
-        ds = self._load_roles(self.roles, ds)
+        ds = self._load_roles(ds)
 
         # and finally re-process the vars files as they may have been updated
         # by the included roles, but exclude any which have been processed
@@ -160,9 +161,6 @@ class Play(object):
         self._tasks      = self._load_tasks(self._ds.get('tasks', []), load_vars)
         self._handlers   = self._load_tasks(self._ds.get('handlers', []), load_vars)
 
-        # apply any missing tags to role tasks
-        self._late_merge_role_tags()
-
         if self.sudo_user != 'root':
             self.sudo = True
 
@@ -171,166 +169,22 @@ class Play(object):
 
     # *************************************************
 
-    def _get_role_path(self, role):
-        """
-        Returns the path on disk to the directory containing
-        the role directories like tasks, templates, etc. Also
-        returns any variables that were included with the role
-        """
-        orig_path = template(self.basedir,role,self.vars)
-
-        role_vars = {}
-        if type(orig_path) == dict:
-            # what, not a path?
-            role_name = orig_path.get('role', None)
-            if role_name is None:
-                raise errors.AnsibleError("expected a role name in dictionary: %s" % orig_path)
-            role_vars = orig_path
-        else:
-            role_name = utils.role_spec_parse(orig_path)["name"]
-
-        role_path = None
-
-        possible_paths = [
-            utils.path_dwim(self.basedir, os.path.join('roles', role_name)),
-            utils.path_dwim(self.basedir, role_name)
-        ]
-
-        if C.DEFAULT_ROLES_PATH:
-            search_locations = C.DEFAULT_ROLES_PATH.split(os.pathsep)
-            for loc in search_locations:
-                loc = os.path.expanduser(loc)
-                possible_paths.append(utils.path_dwim(loc, role_name))
-
-        for path_option in possible_paths:
-            if os.path.isdir(path_option):
-                role_path = path_option
-                break
-
-        if role_path is None:
-            raise errors.AnsibleError("cannot find role in %s" % " or ".join(possible_paths))
-
-        return (role_path, role_vars)
-
-    def _build_role_dependencies(self, roles, dep_stack, passed_vars={}, level=0):
-        # this number is arbitrary, but it seems sane
-        if level > 20:
-            raise errors.AnsibleError("too many levels of recursion while resolving role dependencies")
+    def _build_role_dependencies(self, roles):
+        role_list = []
         for role in roles:
-            role_path,role_vars = self._get_role_path(role)
-            role_vars = utils.combine_vars(passed_vars, role_vars)
-            vars = self._resolve_main(utils.path_dwim(self.basedir, os.path.join(role_path, 'vars')))
-            vars_data = {}
-            if os.path.isfile(vars):
-                vars_data = utils.parse_yaml_from_file(vars, vault_password=self.vault_password)
-                if vars_data:
-                    if not isinstance(vars_data, dict):
-                        raise errors.AnsibleError("vars from '%s' are not a dict" % vars)
-                    role_vars = utils.combine_vars(vars_data, role_vars)
-            defaults = self._resolve_main(utils.path_dwim(self.basedir, os.path.join(role_path, 'defaults')))
-            defaults_data = {}
-            if os.path.isfile(defaults):
-                defaults_data = utils.parse_yaml_from_file(defaults, vault_password=self.vault_password)
-            # the meta directory contains the yaml that should
-            # hold the list of dependencies (if any)
-            meta = self._resolve_main(utils.path_dwim(self.basedir, os.path.join(role_path, 'meta')))
-            if os.path.isfile(meta):
-                data = utils.parse_yaml_from_file(meta, vault_password=self.vault_password)
-                if data:
-                    dependencies = data.get('dependencies',[])
-                    if dependencies is None:
-                        dependencies = []
-                    for dep in dependencies:
-                        allow_dupes = False
-                        (dep_path,dep_vars) = self._get_role_path(dep)
-                        meta = self._resolve_main(utils.path_dwim(self.basedir, os.path.join(dep_path, 'meta')))
-                        if os.path.isfile(meta):
-                            meta_data = utils.parse_yaml_from_file(meta, vault_password=self.vault_password)
-                            if meta_data:
-                                allow_dupes = utils.boolean(meta_data.get('allow_duplicates',''))
+            role_obj = Role(self, role, self.vars)
+            role_list += self._build_role_dependencies_inner(role_obj)
+        return role_list
 
-                        # if any tags were specified as role/dep variables, merge
-                        # them into the current dep_vars so they're passed on to any
-                        # further dependencies too, and so we only have one place
-                        # (dep_vars) to look for tags going forward
-                        def __merge_tags(var_obj):
-                            old_tags = dep_vars.get('tags', [])
-                            if isinstance(old_tags, basestring):
-                                old_tags = [old_tags, ]
-                            if isinstance(var_obj, dict):
-                                new_tags = var_obj.get('tags', [])
-                                if isinstance(new_tags, basestring):
-                                    new_tags = [new_tags, ]
-                            else:
-                                new_tags = []
-                            return list(set(old_tags).union(set(new_tags)))
-
-                        dep_vars['tags'] = __merge_tags(role_vars)
-                        dep_vars['tags'] = __merge_tags(passed_vars)
-
-                        # if tags are set from this role, merge them
-                        # into the tags list for the dependent role
-                        if "tags" in passed_vars:
-                            for included_role_dep in dep_stack:
-                                included_dep_name = included_role_dep[0]
-                                included_dep_vars = included_role_dep[2]
-                                if included_dep_name == dep:
-                                    if "tags" in included_dep_vars:
-                                        included_dep_vars["tags"] = list(set(included_dep_vars["tags"]).union(set(passed_vars["tags"])))
-                                    else:
-                                        included_dep_vars["tags"] = passed_vars["tags"][:]
-
-                        dep_vars = utils.combine_vars(passed_vars, dep_vars)
-                        dep_vars = utils.combine_vars(role_vars, dep_vars)
-                        vars = self._resolve_main(utils.path_dwim(self.basedir, os.path.join(dep_path, 'vars')))
-                        vars_data = {}
-                        if os.path.isfile(vars):
-                            vars_data = utils.parse_yaml_from_file(vars, vault_password=self.vault_password)
-                            if vars_data:
-                                dep_vars = utils.combine_vars(vars_data, dep_vars)
-                        defaults = self._resolve_main(utils.path_dwim(self.basedir, os.path.join(dep_path, 'defaults')))
-                        dep_defaults_data = {}
-                        if os.path.isfile(defaults):
-                            dep_defaults_data = utils.parse_yaml_from_file(defaults, vault_password=self.vault_password)
-                        if 'role' in dep_vars:
-                            del dep_vars['role']
-
-                        if not allow_dupes:
-                            if dep in self.included_roles:
-                                # skip back to the top, since we don't want to
-                                # do anything else with this role
-                                continue
-                            else:
-                                self.included_roles.append(dep)
-
-                        def _merge_conditional(cur_conditionals, new_conditionals):
-                            if isinstance(new_conditionals, (basestring, bool)):
-                                cur_conditionals.append(new_conditionals)
-                            elif isinstance(new_conditionals, list):
-                                cur_conditionals.extend(new_conditionals)
-
-                        # pass along conditionals from roles to dep roles
-                        passed_when = passed_vars.get('when')
-                        role_when = role_vars.get('when')
-                        dep_when = dep_vars.get('when')
-
-                        tmpcond = []
-                        _merge_conditional(tmpcond, passed_when)
-                        _merge_conditional(tmpcond, role_when)
-                        _merge_conditional(tmpcond, dep_when)
-
-                        if len(tmpcond) > 0:
-                            dep_vars['when'] = tmpcond
-
-                        self._build_role_dependencies([dep], dep_stack, passed_vars=dep_vars, level=level+1)
-                        dep_stack.append([dep,dep_path,dep_vars,dep_defaults_data])
-
-            # only add the current role when we're at the top level,
-            # otherwise we'll end up in a recursive loop
-            if level == 0:
-                self.included_roles.append(role)
-                dep_stack.append([role,role_path,role_vars,defaults_data])
-        return dep_stack
+    def _build_role_dependencies_inner(self, parent_role):
+        # small helper function that recursively gets
+        # all of the given roles dependencies and returns
+        # them as a list, with the parent at the end
+        list = []
+        for dep in parent_role.dependencies:
+            list += self._build_role_dependencies_inner(dep)
+        list.append(parent_role)
+        return list
 
     def _load_role_defaults(self, defaults_files):
         # process default variables
@@ -345,7 +199,7 @@ class Play(object):
 
         return default_vars
 
-    def _load_roles(self, roles, ds):
+    def _load_roles(self, ds):
         # a role is a name that auto-includes the following if they exist
         #    <rolename>/tasks/main.yml
         #    <rolename>/handlers/main.yml
@@ -353,8 +207,7 @@ class Play(object):
         #    <rolename>/library
         # and it auto-extends tasks/handlers/vars_files/module paths as appropriate if found
 
-        if roles is None:
-            roles = []
+        roles = ds.get('roles', [])
         if type(roles) != list:
             raise errors.AnsibleError("value of 'roles:' must be a list")
 
@@ -372,38 +225,36 @@ class Play(object):
         # flush handlers after pre_tasks
         new_tasks.append(dict(meta='flush_handlers'))
 
-        roles = self._build_role_dependencies(roles, [], self.vars)
-
-        # give each role an uuid and
-        # make role_path available as variable to the task
-        for idx, val in enumerate(roles):
-            this_uuid = str(uuid.uuid4())
-            roles[idx][-2]['role_uuid'] = this_uuid
-            roles[idx][-2]['role_path'] = roles[idx][1]
-
+        self._roles = self._build_role_dependencies(roles)
         role_names = []
 
-        for (role,role_path,role_vars,default_vars) in roles:
+        for role in self._roles:
+
+            if role.has_run and not role.allow_dupes:
+                continue
+            role.has_run = True
+
             # special vars must be extracted from the dict to the included tasks
             special_keys = [ "sudo", "sudo_user", "when", "with_items" ]
             special_vars = {}
+            role_vars = role.get_vars()
             for k in special_keys:
                 if k in role_vars:
                     special_vars[k] = role_vars[k]
 
-            task_basepath     = utils.path_dwim(self.basedir, os.path.join(role_path, 'tasks'))
-            handler_basepath  = utils.path_dwim(self.basedir, os.path.join(role_path, 'handlers'))
-            vars_basepath     = utils.path_dwim(self.basedir, os.path.join(role_path, 'vars'))
-            meta_basepath     = utils.path_dwim(self.basedir, os.path.join(role_path, 'meta'))
-            defaults_basepath = utils.path_dwim(self.basedir, os.path.join(role_path, 'defaults'))
+            task_basepath     = utils.path_dwim(self.basedir, os.path.join(role.path, 'tasks'))
+            handler_basepath  = utils.path_dwim(self.basedir, os.path.join(role.path, 'handlers'))
+            vars_basepath     = utils.path_dwim(self.basedir, os.path.join(role.path, 'vars'))
+            meta_basepath     = utils.path_dwim(self.basedir, os.path.join(role.path, 'meta'))
+            defaults_basepath = utils.path_dwim(self.basedir, os.path.join(role.path, 'defaults'))
 
-            task      = self._resolve_main(task_basepath)
-            handler   = self._resolve_main(handler_basepath)
-            vars_file = self._resolve_main(vars_basepath)
-            meta_file = self._resolve_main(meta_basepath)
-            defaults_file = self._resolve_main(defaults_basepath)
+            task          = utils.resolve_main(task_basepath)
+            handler       = utils.resolve_main(handler_basepath)
+            vars_file     = utils.resolve_main(vars_basepath)
+            meta_file     = utils.resolve_main(meta_basepath)
+            defaults_file = utils.resolve_main(defaults_basepath)
 
-            library   = utils.path_dwim(self.basedir, os.path.join(role_path, 'library'))
+            library   = utils.path_dwim(self.basedir, os.path.join(role.path, 'library'))
 
             missing = lambda f: not os.path.isfile(f)
             if missing(task) and missing(handler) and missing(vars_file) and missing(defaults_file) and missing(meta_file) and not os.path.isdir(library):
@@ -414,15 +265,15 @@ class Play(object):
             else:
                 role_name = utils.role_spec_parse(role)["name"]
 
-            role_names.append(role_name)
+            role_names.append(role.name)
             if os.path.isfile(task):
-                nt = dict(include=pipes.quote(task), vars=role_vars, default_vars=default_vars, role_name=role_name)
+                nt = dict(include=pipes.quote(task), vars=role_vars, default_vars=role.default_vars, role=role)
                 for k in special_keys:
                     if k in special_vars:
                         nt[k] = special_vars[k]
                 new_tasks.append(nt)
             if os.path.isfile(handler):
-                nt = dict(include=pipes.quote(handler), vars=role_vars, role_name=role_name)
+                nt = dict(include=pipes.quote(handler), vars=role_vars, role=role)
                 for k in special_keys:
                     if k in special_vars:
                         nt[k] = special_vars[k]
@@ -469,27 +320,8 @@ class Play(object):
 
     # *************************************************
 
-    def _resolve_main(self, basepath):
-        ''' flexibly handle variations in main filenames '''
-        # these filenames are acceptable:
-        mains = (
-                 os.path.join(basepath, 'main'),
-                 os.path.join(basepath, 'main.yml'),
-                 os.path.join(basepath, 'main.yaml'),
-                 os.path.join(basepath, 'main.json'),
-                )
-        if sum([os.path.isfile(x) for x in mains]) > 1:
-            raise errors.AnsibleError("found multiple main files at %s, only one allowed" % (basepath))
-        else:
-            for m in mains:
-                if os.path.isfile(m):
-                    return m # exactly one main file
-            return mains[0] # zero mains (we still need to return something)
-
-    # *************************************************
-
     def _load_tasks(self, tasks, vars=None, default_vars=None, sudo_vars=None,
-                    additional_conditions=None, original_file=None, role_name=None):
+                    additional_conditions=None, original_file=None, role=None):
         ''' handle task and handler include statements '''
 
         results = []
@@ -571,8 +403,13 @@ class Play(object):
                     task_vars = utils.combine_vars(task_vars, x['vars'])
 
                 new_role = None
-                if 'role_name' in x:
-                    new_role = x['role_name']
+                if 'role' in x:
+                    new_role = x['role']
+                elif role:
+                    new_role = role
+
+                if new_role:
+                    task_vars = utils.combine_vars(task_vars, new_role.get_vars())
 
                 mv = task_vars.copy()
                 for t in tokens[1:]:
@@ -590,14 +427,24 @@ class Play(object):
                         if isinstance(y, dict) and 'include' in y:
                             y['role_name'] = new_role
                 loaded = self._load_tasks(data, mv, default_vars, included_sudo_vars, list(included_additional_conditions), original_file=include_filename, role_name=new_role)
+                loaded = self._load_tasks(
+                    tasks=data, 
+                    vars=mv, 
+                    default_vars=default_vars, 
+                    sudo_vars=included_sudo_vars,
+                    additional_conditions=list(included_additional_conditions),
+                    original_file=include_filename,
+                    role=new_role,
+                )
                 results += loaded
             elif type(x) == dict:
                 task = Task(
-                    self, x,
+                    play=self, 
+                    ds=x,
                     module_vars=task_vars,
                     default_vars=default_vars,
                     additional_conditions=list(additional_conditions),
-                    role_name=role_name
+                    role=role,
                 )
                 results.append(task)
             else:
@@ -622,6 +469,21 @@ class Play(object):
         if len(matched_skip_tags) > 0 or (self.playbook.only_tags != ['all'] and len(matched_only_tags) == 0):
             return False
         return True
+
+    # *************************************************
+
+    def _filter_tags(self, tag_list):
+        """
+        Returns a list of tags based on the input list, filtered
+        for tags that are specified or skipped in the play
+        """
+
+        new_set = set(tag_list)
+        if len(self.playbook.only_tags) > 0 and self.playbook.only_tags != ['all']:
+            new_set &= set(self.playbook.only_tags)
+        if len(self.playbook.skip_tags) > 0:
+            new_set -= set(self.playbook.skip_tags)
+        return list(new_set)
 
     # *************************************************
 
@@ -721,6 +583,8 @@ class Play(object):
                 all_tags.extend(task.tags)
         for handler in self._handlers:
             all_tags.extend(handler.tags)
+        for role in self._roles:
+            all_tags.extend(role.tags)
 
         # compare the lists of tags using sets and return the matched and unmatched
         all_tags_set = set(all_tags)
@@ -729,31 +593,6 @@ class Play(object):
         unmatched_tags = all_tags_set - tags_set
 
         return matched_tags, unmatched_tags
-
-    # *************************************************
-
-    def _late_merge_role_tags(self):
-        # build a local dict of tags for roles
-        role_tags = {}
-        for task in self._ds['tasks']:
-            if 'role_name' in task:
-                this_role = task['role_name'] + "-" + task['vars']['role_uuid']
-
-                if this_role not in role_tags:
-                    role_tags[this_role] = []
-
-                if 'tags' in task['vars']:
-                    if isinstance(task['vars']['tags'], basestring):
-                        role_tags[this_role] += shlex.split(task['vars']['tags'])
-                    else:
-                        role_tags[this_role] += task['vars']['tags']
-
-        # apply each role's tags to its tasks
-        for idx, val in enumerate(self._tasks):
-            if getattr(val, 'role_name', None) is not None:
-                this_role = val.role_name + "-" + val.module_vars['role_uuid']
-                if this_role in role_tags:
-                    self._tasks[idx].tags = sorted(set(self._tasks[idx].tags + role_tags[this_role]))
 
     # *************************************************
 

@@ -27,7 +27,7 @@ class Task(object):
     __slots__ = [
         'name', 'meta', 'action', 'when', 'async_seconds', 'async_poll_interval',
         'notify', 'module_name', 'module_args', 'module_vars', 'default_vars',
-        'play', 'notified_by', 'tags', 'register', 'role_name',
+        'play', 'notified_by', 'tags', 'register', 'role',
         'delegate_to', 'first_available_file', 'ignore_errors',
         'local_action', 'transport', 'sudo', 'remote_user', 'sudo_user', 'sudo_pass',
         'items_lookup_plugin', 'items_lookup_terms', 'environment', 'args',
@@ -45,7 +45,7 @@ class Task(object):
          'su', 'su_user', 'su_pass', 'no_log', 'run_once',
     ]
 
-    def __init__(self, play, ds, module_vars=None, default_vars=None, additional_conditions=None, role_name=None):
+    def __init__(self, play, ds, module_vars=None, default_vars=None, additional_conditions=None, role=None):
         ''' constructor loads from a task or handler datastructure '''
 
         # meta directives are used to tell things like ansible/playbook to run
@@ -130,7 +130,7 @@ class Task(object):
         self.sudo         = utils.boolean(ds.get('sudo', play.sudo))
         self.su           = utils.boolean(ds.get('su', play.su))
         self.environment  = ds.get('environment', {})
-        self.role_name    = role_name
+        self.role         = role
         self.no_log       = utils.boolean(ds.get('no_log', "false")) or self.play.no_log
         self.run_once     = utils.boolean(ds.get('run_once', 'false'))
 
@@ -307,6 +307,8 @@ class Task(object):
             elif type(apply_tags) == list:
                 self.tags.extend(apply_tags)
         self.tags.extend(import_tags)
+        if self.role:
+            self.tags.extend(self.role.tags)
 
         if additional_conditions:
             new_conditions = additional_conditions[:]

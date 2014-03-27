@@ -611,7 +611,7 @@ class PlaybookCallbacks(object):
             if name == self.start_at or fnmatch.fnmatch(name, self.start_at):
                 # we found out match, we can get rid of this now
                 del self.start_at
-            elif self.task.role_name:
+            elif self.task.role.name:
                 # handle tasks prefixed with rolenames
                 actual_name = name.split('|', 1)[1].lstrip()
                 if actual_name == self.start_at or fnmatch.fnmatch(actual_name, self.start_at):
