@@ -236,15 +236,18 @@ class Inventory(object):
         """
 
         # The regex used to match on the range, which can be [x] or [x-y].
-        pattern_re = re.compile("^(.*)\[([-]?[0-9]+)(?:(?:-)([0-9]+))?\](.*)$")
+        pattern_re = re.compile("^(.*)\[([-]?[0-9]+)(?:(-)([0-9]+)?)?\](.*)$")
         m = pattern_re.match(pattern)
         if m:
-            (target, first, last, rest) = m.groups()
+            (target, first, sep, last, rest) = m.groups()
             first = int(first)
-            if last:
+            if sep:
                 if first < 0:
                     raise errors.AnsibleError("invalid range: negative indices cannot be used as the first item in a range")
-                last = int(last)
+                if not last:
+                    last = 'last'
+                else:
+                    last = int(last)
             else:
                 last = first
             return (target, (first, last))
@@ -254,7 +257,7 @@ class Inventory(object):
     def _apply_ranges(self, pat, hosts):
         """
         given a pattern like foo, that matches hosts, return all of hosts
-        given a pattern like foo[0:5], where foo matches hosts, return the first 6 hosts
+        given a pattern like foo[0-5], where foo matches hosts, return the first 6 hosts
         """ 
 
         # If there are no hosts to select from, just return the
@@ -268,18 +271,14 @@ class Inventory(object):
             return hosts
 
         (left, right) = limits
-
-        if left == '':
-            left = 0
-        if right == '':
-            right = 0
-        left=int(left)
-        right=int(right)
         try:
-            if left != right:
-                return hosts[left:right]
+            if right == 'last':
+                return hosts[left:]
             else:
-                return [ hosts[left] ]
+                if left != right:
+                    return hosts[left:right]
+                else:
+                    return [ hosts[left] ]
         except IndexError:
             raise errors.AnsibleError("no hosts matching the pattern '%s' were found" % pat)
 
@@ -441,7 +440,7 @@ class Inventory(object):
         if not isinstance(restriction, list):
             restriction = [ restriction ]
         self._also_restriction = restriction
-    
+
     def subset(self, subset_pattern):
         """ 
         Limits inventory results to a subset of inventory that matches a given
