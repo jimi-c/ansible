@@ -182,6 +182,7 @@ class AnsibleModule(object):
         self.supports_check_mode = supports_check_mode
         self.check_mode = False
         self.no_log = no_log
+        self.exit_callbacks = []
         
         self.aliases = {}
         
@@ -898,19 +899,36 @@ class AnsibleModule(object):
     def from_json(self, data):
         return json.loads(data)
 
-    def exit_json(self, **kwargs):
+    def add_exit_callback(self, callback, *args, **kwargs):
+        if callable(callback) and callback not in self.exit_callbacks:
+            self.exit_callbacks.append((callback, args, kwargs))
+        else:
+            self.fail_json(msg="callback is not a function")
+
+    def run_exit_callbacks(self):
+        for (callback, args, kwargs) in self.exit_callbacks:
+            try:
+                callback(*args, **kwargs)
+            except Exception, e:
+                self.fail_json(msg="exit callback %s failed: %s" % (callback, e), run_callbacks=False)
+
+    def exit_json(self, run_callbacks=True, **kwargs):
         ''' return from the module, without error '''
         self.add_path_info(kwargs)
         if not 'changed' in kwargs:
             kwargs['changed'] = False
+        if run_callbacks:
+            self.run_exit_callbacks()
         print self.jsonify(kwargs)
         sys.exit(0)
 
-    def fail_json(self, **kwargs):
+    def fail_json(self, run_callbacks=True, **kwargs):
         ''' return from the module, with an error message '''
         self.add_path_info(kwargs)
         assert 'msg' in kwargs, "implementation error -- msg to explain the error is required"
         kwargs['failed'] = True
+        if run_callbacks:
+            self.run_exit_callbacks()
         print self.jsonify(kwargs)
         sys.exit(1)
 

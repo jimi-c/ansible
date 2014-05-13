@@ -181,7 +181,8 @@ def get_submodule_update_params(module, git_path, cwd):
 
 def write_ssh_wrapper():
     module_dir = get_module_path()
-    fd, wrapper_path = tempfile.mkstemp(prefix=module_dir + '/')
+    #fd, wrapper_path = tempfile.mkstemp(prefix=module_dir + '/')
+    fd, wrapper_path = tempfile.mkstemp()
     fh = os.fdopen(fd, 'w+b')
     template = """#!/bin/sh
 if [ -z "$GIT_SSH_OPTS" ]; then
@@ -201,6 +202,10 @@ fi
     st = os.stat(wrapper_path)
     os.chmod(wrapper_path, st.st_mode | stat.S_IEXEC)
     return wrapper_path
+
+def cleanup_ssh_wrapper(path):
+    # cleanup the wrapper script
+    os.remove(path)
 
 def set_git_ssh(ssh_wrapper, key_file, ssh_opts):
 
@@ -505,6 +510,7 @@ def main():
     if key_file or ssh_opts:
         ssh_wrapper = write_ssh_wrapper()
         set_git_ssh(ssh_wrapper, key_file, ssh_opts)
+        module.add_exit_callback(cleanup_ssh_wrapper, path=ssh_wrapper)
 
     # add the git repo's hostkey 
     if module.params['ssh_opts'] is not None:
