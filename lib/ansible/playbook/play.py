@@ -410,6 +410,8 @@ class Play(object):
 
                 if new_role:
                     task_vars = utils.combine_vars(task_vars, new_role.get_vars())
+                    for cond in new_role.conditionals:
+                        included_additional_conditions.insert(0, cond)
 
                 mv = task_vars.copy()
                 for t in tokens[1:]:
@@ -426,7 +428,6 @@ class Play(object):
                     for y in data:
                         if isinstance(y, dict) and 'include' in y:
                             y['role_name'] = new_role
-                loaded = self._load_tasks(data, mv, default_vars, included_sudo_vars, list(included_additional_conditions), original_file=include_filename, role_name=new_role)
                 loaded = self._load_tasks(
                     tasks=data, 
                     vars=mv, 

@@ -208,10 +208,10 @@ class Role(object):
         def _do_load_conditionals(obj):
             if isinstance(obj, dict):
                 conds = obj.get('when', None)
-                if isinstance(conds, basestring):
+                if isinstance(conds, list):
+                   self.conditionals.extend(conds)
+                elif isinstance(conds, (basestring, bool)):
                    self.conditionals.append(conds)
-                elif isinstance(conds, list):
-                   self.conditionals += conds
 
         _do_load_conditionals(self.inherited_vars)
         _do_load_conditionals(self.params)
