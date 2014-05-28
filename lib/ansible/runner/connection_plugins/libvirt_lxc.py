@@ -21,7 +21,7 @@ import distutils.spawn
 import os
 import subprocess
 from ansible import errors
-from ansible.callbacks import vvv
+from ansible.utils.display_functions import vvv
 
 class Connection(object):
     ''' Local lxc based connections '''

@@ -35,9 +35,9 @@ import re
 import sys
 from termios import tcflush, TCIFLUSH
 from binascii import hexlify
-from ansible.callbacks import vvv
 from ansible import errors
 from ansible import utils
+from ansible.utils.display_functions import vvv
 from ansible import constants as C
             
 AUTHENTICITY_MSG="""

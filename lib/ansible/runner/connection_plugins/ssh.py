@@ -30,9 +30,9 @@ import gettext
 import pty
 from hashlib import sha1
 import ansible.constants as C
-from ansible.callbacks import vvv
 from ansible import errors
 from ansible import utils
+from ansible.utils.display_functions import vvv
 
 class Connection(object):
     ''' ssh based connections '''

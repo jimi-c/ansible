@@ -28,7 +28,7 @@ from ansible import __version__
 from ansible.utils import template
 from ansible.utils.display_functions import *
 from ansible.utils.plugins import *
-from ansible.callbacks import display
+from ansible.utils.string_functions import *
 import ansible.constants as C
 import ast
 import time
@@ -47,8 +47,6 @@ import json
 
 #import vault
 from vault import VaultLib
-
-VERBOSITY=0
 
 MAX_FILE_SIZE_FOR_DIFF=1*1024*1024
 
@@ -159,20 +157,6 @@ def exit(msg, rc=1):
     err(msg)
     sys.exit(rc)
 
-def jsonify(result, format=False):
-    ''' format JSON output (uncompressed or uncompressed) '''
-
-    if result is None:
-        return "{}"
-    result2 = result.copy()
-    for key, value in result2.items():
-        if type(value) is str:
-            result2[key] = value.decode('utf-8', 'ignore')
-    if format:
-        return json.dumps(result2, sort_keys=True, indent=4)
-    else:
-        return json.dumps(result2, sort_keys=True)
-
 def write_tree_file(tree, hostname, buf):
     ''' write something into treedir/hostname '''
 
@@ -192,6 +176,57 @@ def is_changed(result):
     ''' is a given JSON result a changed result? '''
 
     return (result.get('changed', False) in [ True, 'True', 'true'])
+
+def regular_generic_msg(hostname, result, oneline, caption):
+    ''' output on the result of a module run that is not command '''
+
+    if not oneline:
+        return "%s | %s >> %s\n" % (hostname, caption, jsonify(result,format=True))
+    else:
+        return "%s | %s >> %s\n" % (hostname, caption, jsonify(result))
+
+def command_generic_msg(hostname, result, oneline, caption):
+    ''' output the result of a command run '''
+
+    rc     = result.get('rc', '0')
+    stdout = result.get('stdout','')
+    stderr = result.get('stderr', '')
+    msg    = result.get('msg', '')
+
+    hostname = hostname.encode('utf-8')
+    caption  = caption.encode('utf-8')
+
+    if not oneline:
+        buf = "%s | %s | rc=%s >>\n" % (hostname, caption, result.get('rc',0))
+        if stdout:
+            buf += stdout
+        if stderr:
+            buf += stderr
+        if msg:
+            buf += msg
+        return buf + "\n"
+    else:
+        if stderr:
+            return "%s | %s | rc=%s | (stdout) %s (stderr) %s" % (hostname, caption, rc, stdout, stderr)
+        else:
+            return "%s | %s | rc=%s | (stdout) %s" % (hostname, caption, rc, stdout)
+
+def host_report_msg(hostname, module_name, result, oneline):
+    ''' summarize the JSON results for a particular host '''
+
+    failed = is_failed(result)
+    msg = ('', None)
+    if module_name in [ 'command', 'shell', 'raw' ] and 'ansible_job_id' not in result and result.get('parsed',True) != False:
+        if not failed:
+            msg = (command_generic_msg(hostname, result, oneline, 'success'), 'green')
+        else:
+            msg = (command_generic_msg(hostname, result, oneline, 'FAILED'), 'red')
+    else:
+        if not failed:
+            msg = (regular_generic_msg(hostname, result, oneline, 'success'), 'green')
+        else:
+            msg = (regular_generic_msg(hostname, result, oneline, 'FAILED'), 'red')
+    return msg
 
 def check_conditional(conditional, basedir, inject, fail_on_undefined=False):
 
@@ -685,39 +720,6 @@ def getch():
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return ch
 
-def sanitize_output(str):
-    ''' strips private info out of a string '''
-
-    private_keys = ['password', 'login_password']
-
-    filter_re = [
-        # filter out things like user:pass@foo/whatever
-        # and http://username:pass@wherever/foo
-        re.compile('^(?P<before>.*:)(?P<password>.*)(?P<after>\@.*)$'),
-    ]
-
-    parts = str.split()
-    output = ''
-    for part in parts:
-        try:
-            (k,v) = part.split('=', 1)
-            if k in private_keys:
-                output += " %s=VALUE_HIDDEN" % k
-            else:
-                found = False
-                for filter in filter_re:
-                    m = filter.match(v)
-                    if m:
-                        d = m.groupdict()
-                        output += " %s=%s" % (k, d['before'] + "********" + d['after'])
-                        found = True
-                        break
-                if not found:
-                    output += " %s" % part
-        except:
-            output += " %s" % part
-
-    return output.strip()
 
 ####################################################################
 # option handling code for /usr/bin/ansible and ansible-playbook

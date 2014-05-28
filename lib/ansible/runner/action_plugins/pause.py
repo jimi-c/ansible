@@ -15,10 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
-from ansible.callbacks import vv
 from ansible.errors import AnsibleError as ae
 from ansible.runner.return_data import ReturnData
 from ansible.utils import getch, parse_kv
+from ansible.utils.display_functions import vv
 import ansible.utils.template as template
 from termios import tcflush, TCIFLUSH
 import datetime

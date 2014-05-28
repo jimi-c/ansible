@@ -26,7 +26,7 @@ from ansible import utils
 from ansible import errors
 from ansible import module_common
 from ansible.runner.return_data import ReturnData
-from ansible.callbacks import vv, vvv
+from ansible.utils.display_functions import vv, vvv
 
 class ActionModule(object):
 

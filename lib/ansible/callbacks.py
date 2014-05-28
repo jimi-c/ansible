@@ -22,98 +22,16 @@ import os
 import subprocess
 import random
 import fnmatch
-import tempfile
-import fcntl
 import constants
-from ansible.color import stringc
 
-import logging
-if constants.DEFAULT_LOG_PATH != '':
-    path = constants.DEFAULT_LOG_PATH
-
-    if (os.path.exists(path) and not os.access(path, os.W_OK)) and not os.access(os.path.dirname(path), os.W_OK):
-        sys.stderr.write("log file at %s is not writeable, aborting\n" % path)
-        sys.exit(1)
-
-
-    logging.basicConfig(filename=path, level=logging.DEBUG, format='%(asctime)s %(name)s %(message)s')
-    mypid = str(os.getpid())
-    user = getpass.getuser()
-    logger = logging.getLogger("p=%s u=%s | " % (mypid, user))
+from ansible.utils import host_report_msg
+from ansible.utils.display_functions import display, banner
 
 callback_plugins = []
 
 def load_callback_plugins():
     global callback_plugins
     callback_plugins = [x for x in utils.plugins.callback_loader.all()]
-
-def get_cowsay_info():
-    if constants.ANSIBLE_NOCOWS:
-        return (None, None)
-    cowsay = None
-    if os.path.exists("/usr/bin/cowsay"):
-        cowsay = "/usr/bin/cowsay"
-    elif os.path.exists("/usr/games/cowsay"):
-        cowsay = "/usr/games/cowsay"
-    elif os.path.exists("/usr/local/bin/cowsay"):
-        # BSD path for cowsay
-        cowsay = "/usr/local/bin/cowsay"
-    elif os.path.exists("/opt/local/bin/cowsay"):
-        # MacPorts path for cowsay
-        cowsay = "/opt/local/bin/cowsay"
-
-    noncow = os.getenv("ANSIBLE_COW_SELECTION",None)
-    if cowsay and noncow == 'random':
-        cmd = subprocess.Popen([cowsay, "-l"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        (out, err) = cmd.communicate()
-        cows = out.split()
-        cows.append(False)
-        noncow = random.choice(cows)
-    return (cowsay, noncow)
-
-cowsay, noncow = get_cowsay_info()
-
-def log_lockfile():
-    # create the path for the lockfile and open it
-    tempdir = tempfile.gettempdir()
-    uid = os.getuid()
-    path = os.path.join(tempdir, ".ansible-lock.%s" % uid)
-    lockfile = open(path, 'w')
-    # use fcntl to set FD_CLOEXEC on the file descriptor, 
-    # so that we don't leak the file descriptor later
-    lockfile_fd = lockfile.fileno()
-    old_flags = fcntl.fcntl(lockfile_fd, fcntl.F_GETFD)
-    fcntl.fcntl(lockfile_fd, fcntl.F_SETFD, old_flags | fcntl.FD_CLOEXEC)
-    return lockfile
-    
-LOG_LOCK = log_lockfile()
-
-def log_flock(runner):
-    if runner is not None:
-        try:
-            fcntl.lockf(runner.output_lockfile, fcntl.LOCK_EX)
-        except OSError:
-            # already got closed?
-            pass
-    else:
-        try:
-            fcntl.lockf(LOG_LOCK, fcntl.LOCK_EX)
-        except OSError:
-            pass
-
-
-def log_unflock(runner):
-    if runner is not None:
-        try:
-            fcntl.lockf(runner.output_lockfile, fcntl.LOCK_UN)
-        except OSError:
-            # already got closed?
-            pass
-    else:
-        try:
-            fcntl.lockf(LOG_LOCK, fcntl.LOCK_UN)
-        except OSError:
-            pass
 
 def set_playbook(callback, playbook):
     ''' used to notify callback plugins of playbook context '''
@@ -133,33 +51,6 @@ def set_task(callback, task):
     for callback_plugin in callback_plugins:
         callback_plugin.task = task
 
-def display(msg, color=None, stderr=False, screen_only=False, log_only=False, runner=None):
-    # prevent a very rare case of interlaced multiprocess I/O
-    log_flock(runner)
-    msg2 = msg
-    if color:
-        msg2 = stringc(msg, color)
-    if not log_only:
-        if not stderr:
-            try:
-                print msg2
-            except UnicodeEncodeError:
-                print msg2.encode('utf-8')
-        else:
-            try:
-                print >>sys.stderr, msg2
-            except UnicodeEncodeError:
-                print >>sys.stderr, msg2.encode('utf-8')
-    if constants.DEFAULT_LOG_PATH != '':
-        while msg.startswith("\n"):
-            msg = msg.replace("\n","")
-        if not screen_only:
-            if color == 'red':
-                logger.error(msg)
-            else:
-                logger.info(msg)
-    log_unflock(runner)
-
 def call_callback_module(method_name, *args, **kwargs):
 
     for callback_plugin in callback_plugins:
@@ -174,23 +65,6 @@ def call_callback_module(method_name, *args, **kwargs):
         for method in methods:
             if method is not None:
                 method(*args, **kwargs)
-
-def vv(msg, host=None):
-    return verbose(msg, host=host, caplevel=1)
-
-def vvv(msg, host=None):
-    return verbose(msg, host=host, caplevel=2)
-
-def vvvv(msg, host=None):
-    return verbose(msg, host=host, caplevel=3)
-
-def verbose(msg, host=None, caplevel=2):
-    msg = utils.sanitize_output(msg)
-    if utils.VERBOSITY > caplevel:
-        if host is None:
-            display(msg, color='blue')
-        else:
-            display("<%s> %s" % (host, msg), color='blue')
 
 class AggregateStats(object):
     ''' holds stats about per-host activity during playbook runs '''
@@ -245,97 +119,14 @@ class AggregateStats(object):
 
 ########################################################################
 
-def regular_generic_msg(hostname, result, oneline, caption):
-    ''' output on the result of a module run that is not command '''
-
-    if not oneline:
-        return "%s | %s >> %s\n" % (hostname, caption, utils.jsonify(result,format=True))
-    else:
-        return "%s | %s >> %s\n" % (hostname, caption, utils.jsonify(result))
-
-
-def banner_cowsay(msg):
-
-    if ": [" in msg:
-        msg = msg.replace("[","")
-        if msg.endswith("]"):
-            msg = msg[:-1]
-    runcmd = [cowsay,"-W", "60"]
-    if noncow:
-        runcmd.append('-f')
-        runcmd.append(noncow)
-    runcmd.append(msg)
-    cmd = subprocess.Popen(runcmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    (out, err) = cmd.communicate()
-    return "%s\n" % out
-
-def banner_normal(msg):
-
-    width = 78 - len(msg)
-    if width < 3:
-        width = 3
-    filler = "*" * width
-    return "\n%s %s " % (msg, filler)
-
-def banner(msg):
-    if cowsay:
-        try:
-            return banner_cowsay(msg)
-        except OSError:
-            # somebody cleverly deleted cowsay or something during the PB run.  heh.
-            return banner_normal(msg)
-    return banner_normal(msg)
-
-def command_generic_msg(hostname, result, oneline, caption):
-    ''' output the result of a command run '''
-
-    rc     = result.get('rc', '0')
-    stdout = result.get('stdout','')
-    stderr = result.get('stderr', '')
-    msg    = result.get('msg', '')
-
-    hostname = hostname.encode('utf-8')
-    caption  = caption.encode('utf-8')
-
-    if not oneline:
-        buf = "%s | %s | rc=%s >>\n" % (hostname, caption, result.get('rc',0))
-        if stdout:
-            buf += stdout
-        if stderr:
-            buf += stderr
-        if msg:
-            buf += msg
-        return buf + "\n"
-    else:
-        if stderr:
-            return "%s | %s | rc=%s | (stdout) %s (stderr) %s" % (hostname, caption, rc, stdout, stderr)
-        else:
-            return "%s | %s | rc=%s | (stdout) %s" % (hostname, caption, rc, stdout)
-
-def host_report_msg(hostname, module_name, result, oneline):
-    ''' summarize the JSON results for a particular host '''
-
-    failed = utils.is_failed(result)
-    msg = ('', None)
-    if module_name in [ 'command', 'shell', 'raw' ] and 'ansible_job_id' not in result and result.get('parsed',True) != False:
-        if not failed:
-            msg = (command_generic_msg(hostname, result, oneline, 'success'), 'green')
-        else:
-            msg = (command_generic_msg(hostname, result, oneline, 'FAILED'), 'red')
-    else:
-        if not failed:
-            msg = (regular_generic_msg(hostname, result, oneline, 'success'), 'green')
-        else:
-            msg = (regular_generic_msg(hostname, result, oneline, 'FAILED'), 'red')
-    return msg
-
-###############################################
-
 class DefaultRunnerCallbacks(object):
     ''' no-op callbacks for API usage of Runner() if no callbacks are specified '''
 
     def __init__(self):
         pass
+
+    def on_start(self):
+        call_callback_module('playbook_on_start')
 
     def on_failed(self, host, res, ignore_errors=False):
         call_callback_module('runner_on_failed', host, res, ignore_errors=ignore_errors)

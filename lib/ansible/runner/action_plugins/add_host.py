@@ -17,10 +17,10 @@
 
 import ansible
 
-from ansible.callbacks import vv
 from ansible.errors import AnsibleError as ae
 from ansible.runner.return_data import ReturnData
 from ansible.utils import parse_kv
+from ansible.utils.display_functions import vv
 from ansible.inventory.host import Host
 from ansible.inventory.group import Group
 

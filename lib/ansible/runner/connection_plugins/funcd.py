@@ -30,7 +30,7 @@ except ImportError:
     pass
 
 import os
-from ansible.callbacks import vvv
+from ansible.utils.display_functions import vvv
 from ansible import errors
 import tempfile
 import shutil

@@ -39,12 +39,13 @@ from ansible import utils
 from ansible.utils import template
 from ansible.utils import check_conditional
 from ansible.utils import string_functions
+from ansible.utils.display_functions import vv
 from ansible import errors
 from ansible import module_common
 import poller
 import connection
 from return_data import ReturnData
-from ansible.callbacks import DefaultRunnerCallbacks, vv
+from ansible.callbacks import DefaultRunnerCallbacks
 from ansible.module_common import ModuleReplacer
 
 module_replacer = ModuleReplacer(strip_comments=False)
