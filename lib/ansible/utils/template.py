@@ -159,13 +159,31 @@ class _jinja2_vars(object):
 
     def __contains__(self, k):
         if k in self.vars:
-            return True
+            try:
+                # the variable may be here, however it could depend
+                # on variables which have are not yet available so
+                # we attempt to template the variable now to test that
+                value = self.__get_templated_var(k, fail_on_undefined=True)
+                return True
+            except:
+                pass
         for i in self.extras:
             if k in i:
                 return True
         if k in self.globals:
             return True
         return False
+
+    def __get_templated_var(self, varname, fail_on_undefined=False):
+        var = self.vars[varname]
+        # the local flag is an override for the global behavior, since
+        # the __contains__() function will always want to fail on undefined
+        should_fail = self.fail_on_undefined or fail_on_undefined
+        # HostVars is special, return it as-is
+        if isinstance(var, dict) and type(var) != dict:
+            return var
+        else:
+            return template(self.basedir, var, self.vars, fail_on_undefined=should_fail)
 
     def __getitem__(self, varname):
         if varname not in self.vars:
@@ -176,12 +194,7 @@ class _jinja2_vars(object):
                 return self.globals[varname]
             else:
                 raise KeyError("undefined variable: %s" % varname)
-        var = self.vars[varname]
-        # HostVars is special, return it as-is
-        if isinstance(var, dict) and type(var) != dict:
-            return var
-        else:
-            return template(self.basedir, var, self.vars, fail_on_undefined=self.fail_on_undefined)
+        return self.__get_templated_var(varname)
 
     def add_locals(self, locals):
         '''
