@@ -24,7 +24,7 @@ import select
 import fcntl
 from ansible import errors
 from ansible import utils
-from ansible.callbacks import vvv
+from ansible.utils.display_functions import vvv
 
 class Connection(object):
     ''' Local based connections '''

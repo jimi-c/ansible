@@ -414,13 +414,15 @@ class TestUtils(unittest.TestCase):
         # figure out how to test this
         pass
 
+    # FIXME: relocate to new unittest file since the sanitize_output() 
+    #        function is not actually in utils/__init__.py now
     def test_sanitize_output(self):
-        self.assertEqual(ansible.utils.sanitize_output('password=foo'), 'password=VALUE_HIDDEN')
-        self.assertEqual(ansible.utils.sanitize_output('foo=user:pass@foo/whatever'),
+        self.assertEqual(ansible.utils.display_functions.sanitize_output('password=foo'), 'password=VALUE_HIDDEN')
+        self.assertEqual(ansible.utils.display_functions.sanitize_output('foo=user:pass@foo/whatever'),
                          'foo=user:********@foo/whatever')
-        self.assertEqual(ansible.utils.sanitize_output('foo=http://username:pass@wherever/foo'),
+        self.assertEqual(ansible.utils.display_functions.sanitize_output('foo=http://username:pass@wherever/foo'),
                          'foo=http://username:********@wherever/foo')
-        self.assertEqual(ansible.utils.sanitize_output('foo=http://wherever/foo'),
+        self.assertEqual(ansible.utils.display_functions.sanitize_output('foo=http://wherever/foo'),
                          'foo=http://wherever/foo')
 
     def test_increment_debug(self):

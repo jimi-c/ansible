@@ -21,11 +21,11 @@ import base64
 import socket
 import struct
 import time
-from ansible.callbacks import vvv, vvvv
 from ansible.errors import AnsibleError, AnsibleFileNotFound
 from ansible.runner.connection_plugins.ssh import Connection as SSHConnection
 from ansible.runner.connection_plugins.paramiko_ssh import Connection as ParamikoConnection
 from ansible import utils
+from ansible.utils.display_functions import vvv, vvvv
 from ansible import constants
 
 # the chunk size to read and send, assuming mtu 1500 and
