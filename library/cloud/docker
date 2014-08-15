@@ -197,6 +197,14 @@ options:
     default: false
     aliases: []
     version_added: "1.8"
+  registry:
+    description:
+      - The remote registry to use for downloading images.
+    required: false
+    default: ''
+    aliases: []
+    version_added: "1.8"
+
 author: Cove Schneider, Joshua Conner, Pavel Antonov
 requirements: [ "docker-py >= 0.3.0", "docker >= 0.10.0" ]
 '''
@@ -300,20 +308,32 @@ Create containers with options specified as key-value pairs and lists:
           - postgresql:db
           - redis:redis
 
-
 Create containers with options specified as strings and lists as comma-separated strings:
 
 - hosts: web
   sudo: yes
   tasks:
-  docker: image=namespace/image_name links=postgresql:db,redis:redis
+  - docker: image=namespace/image_name links=postgresql:db,redis:redis
 
 Create a container with no networking:
 
-- hosts: web
+- hosts: localhost
+  connection: local
+  tasks:
+  - docker: image=namespace/image_name net=none
+
+Create a container based on an image from a private registry:
+
+- hosts: localhost
+  connection: local
   sudo: yes
   tasks:
-  docker: image=namespace/image_name net=none
+  - docker: >
+      state=present
+      image=myhost.mydomain/image_name
+      registry=http://myhost.mydomain:8080/v1/
+      username=testing
+      password=testing
 
 '''
 
@@ -612,7 +632,22 @@ class DockerManager:
             containers = do_create(count, params)
         except:
             image, tag = self.get_split_full_image_tag(params['image'])
-            self.client.pull(image, tag = tag)
+
+            if self.module.params.get('username'):
+                try:
+                    self.client.login(
+                        self.module.params.get('username'),
+                        password=self.module.params.get('password'),
+                        email=self.module.params.get('email'),
+                        registry=self.module.params.get('registry')
+                    )
+                except Exception, e:
+                    self.module.fail_json(msg="error while authenticating to the specified registry: %s" % str(e))
+
+            try:
+                self.client.pull(image, tag=tag)
+            except Exception, e:
+                self.module.fail_json(msg="error while pulling the specified image: %s" % str(e))
             self.increment_counter('pull')
             containers = do_create(count, params)
 
@@ -700,9 +735,10 @@ def main():
             memory_swap     = dict(default=0),
             docker_url      = dict(default='unix://var/run/docker.sock'),
             docker_api_version = dict(default=docker.client.DEFAULT_DOCKER_API_VERSION),
-            user            = dict(default=None),
+            username        = dict(default=None),
             password        = dict(),
             email           = dict(),
+            registry        = dict(),
             hostname        = dict(default=None),
             env             = dict(type='dict'),
             dns             = dict(),
