@@ -237,7 +237,7 @@ def rand(environment, end, start=None, step=None):
 
 
 class FilterModule(object):
-    ''' Ansible core jinja2 filters '''
+    ''' Ansible core jinja2 filters and tests '''
 
     def filters(self):
         return {
@@ -307,4 +307,11 @@ class FilterModule(object):
 
             # random numbers
             'random': rand,
+        }
+
+    def tests(self):
+        return {
+            # an alternative to 'equalto', which is
+            # available only in jinja2 version 2.8+
+            'equals': lambda x,y: x == y,
         }

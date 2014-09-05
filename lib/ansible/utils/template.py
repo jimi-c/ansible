@@ -37,6 +37,7 @@ from ansible.utils.string_functions import count_newlines_from_end
 class Globals(object):
 
     FILTERS = None
+    TESTS   = None
 
     def __init__(self):
         pass
@@ -55,6 +56,23 @@ def _get_filters():
     Globals.FILTERS = filters
 
     return Globals.FILTERS
+
+def _get_tests():
+    ''' return test plugin instances '''
+
+    if Globals.TESTS is not None:
+        return Globals.TESTS
+
+    from ansible import utils
+    plugins = [ x for x in utils.plugins.filter_loader.all()]
+    tests = {}
+    for fp in plugins:
+        if hasattr(fp, 'tests') and callable(fp.tests):
+            tests.update(fp.tests())
+    Globals.TESTS = tests
+
+    return Globals.TESTS
+
 
 def _get_extensions():
     ''' return jinja2 extensions to load '''
@@ -217,6 +235,7 @@ def template_from_file(basedir, path, vars, vault_password=None):
 
     environment = jinja2.Environment(loader=loader, trim_blocks=True, extensions=_get_extensions())
     environment.filters.update(_get_filters())
+    environment.tests.update(_get_tests())
     environment.globals['lookup'] = my_lookup
     environment.globals['finalize'] = my_finalize
     if fail_on_undefined:
@@ -321,6 +340,7 @@ def template_from_string(basedir, data, vars, fail_on_undefined=False):
 
         environment = jinja2.Environment(trim_blocks=True, undefined=StrictUndefined, extensions=_get_extensions(), finalize=my_finalize)
         environment.filters.update(_get_filters())
+        environment.tests.update(_get_tests())
         environment.template_class = J2Template
 
         if '_original_file' in vars:
