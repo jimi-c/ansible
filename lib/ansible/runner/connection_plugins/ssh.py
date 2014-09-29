@@ -26,6 +26,7 @@ import select
 import fcntl
 import hmac
 import pwd
+import fnmatch
 import gettext
 import pty
 from hashlib import sha1
@@ -203,13 +204,88 @@ class Connection(object):
         stdin.close()
         return (p.returncode, stdout, stderr)
 
+    def read_ssh_configs(self, host):
+        '''
+        Parses and reads the SSH config files for the given host,
+        including pattern matching for Host lines. All keys in the
+        returned dicionary are lower-case, for ease in checking later.
+
+        TODO:
+        This does not yet check for the -F option passed in via arguments.
+        '''
+
+        config_files = ['/etc/ssh/ssh_config', '~/.ssh/config']
+
+        config = dict()
+        current_host_pattern = None
+        for cf in config_files:
+            # expand the path in all possible ways
+            cf = utils.unfrackpath(cf)
+
+            # Open and read all of the lines from file, and start parsing
+            # through the file. We first check to see if the host pattern
+            # has been set, and if so we check to see if the current pattern
+            # matches that of the given host before adding the option/value
+            # to the returned config
+
+            f = open(cf, 'r')
+            lines = f.readlines()
+            f.close()
+
+            for line in lines:
+                if line.rstrip().startswith('#') or line.strip() == '':
+                    # empty line or comment
+                    continue
+                else:
+                    try:
+                        opt, val = line.strip().split(' ', 1)
+                        opt = opt.strip().lower()
+                        val = val.strip()
+                    except:
+                        # malformed line?
+                        continue
+
+                    if opt == 'host':
+                        # if this is a 'Host' line, update the current pattern
+                        current_host_pattern = val
+                    else:
+                        # otherwise we check to make sure this line should apply
+                        # to the given host
+                        applies = True
+                        if current_host_pattern:
+                            patterns = current_host_pattern.split(' ')
+                            for pattern in patterns:
+                                pattern = pattern.strip()
+                                if fnmatch.fnmatch(host, pattern):
+                                    break
+                            else:
+                                applies = False
+
+                        # if it applies, add it to the config
+                        if applies:
+                            config[opt] = val
+
+        # and return the config as we've found it
+        return config
+
     def not_in_host_file(self, host):
-        if 'USER' in os.environ:
-            user_host_file = os.path.expandvars("~${USER}/.ssh/known_hosts")
+        ssh_config = self.read_ssh_configs(host)
+        if 'userknownhostsfile' in ssh_config:
+            user_host_file = ssh_config['userknownhostsfile']
         else:
-            user_host_file = "~/.ssh/known_hosts"
-        user_host_file = os.path.expanduser(user_host_file)
-        
+            if 'USER' in os.environ:
+                user_host_file = os.path.expandvars("~${USER}/.ssh/known_hosts")
+            else:
+                user_host_file = "~/.ssh/known_hosts"
+            user_host_file = os.path.expanduser(user_host_file)
+
+        # if the user-specified known hosts file is set to /dev/null,
+        # we return True here to avoid having to do any locking since
+        # things are being written to the bit-bucket even if checking
+        # host keys is enabled
+        if user_host_file == '/dev/null':
+            return True
+
         host_file_list = []
         host_file_list.append(user_host_file)
         host_file_list.append("/etc/ssh/ssh_known_hosts")
