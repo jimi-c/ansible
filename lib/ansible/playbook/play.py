@@ -260,11 +260,6 @@ class Play(object):
             if missing(task) and missing(handler) and missing(vars_file) and missing(defaults_file) and missing(meta_file) and not os.path.isdir(library):
                 raise errors.AnsibleError("found role at %s, but cannot find %s or %s or %s or %s or %s or %s" % (role_path, task, handler, vars_file, defaults_file, meta_file, library))
 
-            if isinstance(role, dict):
-                role_name = role['role']
-            else:
-                role_name = utils.role_spec_parse(role)["name"]
-
             role_names.append(role.name)
             if os.path.isfile(task):
                 nt = dict(include=pipes.quote(task), vars=role_vars, default_vars=role.default_vars, role=role)

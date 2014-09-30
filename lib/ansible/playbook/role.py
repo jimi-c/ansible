@@ -266,9 +266,24 @@ class Role(object):
         by this role at the time it was created
         '''
 
-        vars = utils.combine_vars(self.role_vars, self.inherited_vars)
+        # inherited vars have the lowest priority
+        vars = self.inherited_vars.copy()
+        # merge the child vars recursively
+        for dep in self.dependencies:
+            vars = utils.combine_vars(vars, dep.get_vars())
+        # and then merge in the higher-priority vars
+        # starting with the role_vars (vars/main.yml)
+        vars = utils.combine_vars(vars, self.role_vars)
+        # and then the role params
         vars = utils.combine_vars(vars, self.params)
+        # clean out things which may have shown up in vars
+        # due to the nature of the declaration structure, but
+        # which we do not want included as vars
         for bad_key in ('tags', 'when'):
             if vars.get(bad_key):
                 del vars[bad_key]
+        # and finally some special vars
+        vars['role_name'] = self.name
+        vars['role_uuid'] = self.uuid
+        # done
         return vars
