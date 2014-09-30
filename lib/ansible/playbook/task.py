@@ -27,7 +27,7 @@ class Task(object):
     __slots__ = [
         'name', 'meta', 'action', 'when', 'async_seconds', 'async_poll_interval',
         'notify', 'module_name', 'module_args', 'module_vars', 'default_vars',
-        'play', 'notified_by', 'tags', 'register', 'role_name',
+        'play', 'on_failure', 'notified_by', 'notified_on_failure', 'tags', 'register', 'role_name',
         'delegate_to', 'first_available_file', 'ignore_errors',
         'local_action', 'transport', 'sudo', 'remote_user', 'sudo_user', 'sudo_pass',
         'items_lookup_plugin', 'items_lookup_terms', 'environment', 'args',
@@ -37,7 +37,7 @@ class Task(object):
 
     # to prevent typos and such
     VALID_KEYS = [
-         'name', 'meta', 'action', 'when', 'async', 'poll', 'notify',
+         'name', 'meta', 'action', 'when', 'async', 'poll', 'notify', 'on_failure',
          'first_available_file', 'include', 'tags', 'register', 'ignore_errors',
          'delegate_to', 'local_action', 'transport', 'remote_user', 'sudo', 'sudo_user',
          'sudo_pass', 'when', 'connection', 'environment', 'args',
@@ -195,9 +195,10 @@ class Task(object):
             if self.delegate_to in ['127.0.0.1', 'localhost']:
                 self.transport   = 'local'
 
-        # notified by is used by Playbook code to flag which hosts
-        # need to run a notifier
+        # notified lists are used by Playbook code to flag which hosts
+        # need to run a handler
         self.notified_by = []
+        self.notified_on_failure = []
 
         # if no name is specified, use the action line as the name
         if self.name is None:
@@ -219,6 +220,7 @@ class Task(object):
         self.async_poll_interval = template.template_from_string(play.basedir, self.async_poll_interval, all_vars)
         self.async_poll_interval = int(self.async_poll_interval)
         self.notify = ds.get('notify', [])
+        self.on_failure = ds.get('on_failure', [])
         self.first_available_file = ds.get('first_available_file', None)
 
         self.items_lookup_plugin = ds.get('items_lookup_plugin', None)
@@ -234,9 +236,11 @@ class Task(object):
         if not isinstance(self.action, basestring):
             raise errors.AnsibleError("action is of type '%s' and not a string in task. name: %s" % (type(self.action).__name__, self.name))
 
-        # notify can be a string or a list, store as a list
+        # notify and on_failure can be strings or lists, store as a list
         if isinstance(self.notify, basestring):
             self.notify = [ self.notify ]
+        if isinstance(self.on_failure, basestring):
+            self.on_failure = [ self.on_failure ]
 
         # split the action line into a module name + arguments
         try:

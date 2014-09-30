@@ -475,7 +475,7 @@ class PlayBook(object):
 
         # template ignore_errors
         cond = template(play.basedir, task.ignore_errors, task.module_vars, expand_lists=False)
-        task.ignore_errors =  utils.check_conditional(cond, play.basedir, task.module_vars, fail_on_undefined=C.DEFAULT_UNDEFINED_VAR_BEHAVIOR)
+        task.ignore_errors = utils.check_conditional(cond, play.basedir, task.module_vars, fail_on_undefined=C.DEFAULT_UNDEFINED_VAR_BEHAVIOR)
 
         # load up an appropriate ansible runner to run the task in parallel
         results = self._run_task_internal(task)
@@ -531,10 +531,23 @@ class PlayBook(object):
 
         # flag which notify handlers need to be run
         if len(task.notify) > 0:
-            for host, results in results.get('contacted',{}).iteritems():
-                if results.get('changed', False):
+            for host, result in results.get('contacted',{}).iteritems():
+                if result.get('changed', False):
                     for handler_name in task.notify:
                         self._flag_handler(play, template(play.basedir, handler_name, task.module_vars), host)
+
+        # flag exception handlers for failed hosts
+        if len(task.on_failure) > 0:
+            # first loop through all hosts which were contacted
+            # but reported a 'failed' result for the task
+            for host, result in results.get('contacted',{}).iteritems():
+                if result.get('failed', False):
+                    for handler_name in task.on_failure:
+                        self._flag_handler(play, template(play.basedir, handler_name, task.module_vars), host, failed=True)
+            # next loop through all hosts marked as 'failed' by the runner
+            for host, result in results.get('failed',{}).iteritems():
+                for handler_name in task.on_failure:
+                    self._flag_handler(play, template(play.basedir, handler_name, task.module_vars), host, failed=True)
 
         ansible.callbacks.set_task(self.callbacks, None)
         ansible.callbacks.set_task(self.runner_callbacks, None)
@@ -542,7 +555,7 @@ class PlayBook(object):
 
     # *****************************************************
 
-    def _flag_handler(self, play, handler_name, host):
+    def _flag_handler(self, play, handler_name, host, failed=False):
         '''
         if a task has any notify elements, flag handlers for run
         at end of execution cycle for hosts that have indicated
@@ -554,7 +567,10 @@ class PlayBook(object):
             if handler_name == template(play.basedir, x.name, x.module_vars):
                 found = True
                 self.callbacks.on_notify(host, x.name)
-                x.notified_by.append(host)
+                if failed:
+                    x.notified_on_failure.append(host)
+                else:
+                    x.notified_by.append(host)
         if not found:
             raise errors.AnsibleError("change handler (%s) is not defined" % handler_name)
 
@@ -760,16 +776,18 @@ class PlayBook(object):
                         task_errors = True
                         break
                     else:
+                        self.run_failure_handlers(play)
                         self.callbacks.on_no_hosts_remaining()
                         return False
 
             # lift restrictions after each play finishes
             self.inventory.lift_also_restriction()
 
-            if task_errors and not self.force_handlers:
+            if task_errors:
+                self.run_failure_handlers(play)
                 # if there were failed tasks and handler execution
-                # is not forced, quit the play with an error
-                return False
+                if not self.force_handlers:
+                    return False
             else:
                 # no errors, go ahead and execute all handlers
                 if not self.run_handlers(play):
@@ -783,7 +801,6 @@ class PlayBook(object):
         hosts_count = len(on_hosts)
         for task in play.tasks():
             if task.meta is not None:
-
                 fired_names = {}
                 for handler in play.handlers():
                     if len(handler.notified_by) > 0:
@@ -816,3 +833,36 @@ class PlayBook(object):
                 continue
 
         return True
+
+    def run_failure_handlers(self, play):
+        on_hosts = play._play_hosts
+        hosts_count = len(on_hosts)
+        for task in play.tasks():
+            fired_names = {}
+            for handler in play.handlers():
+                if len(handler.notified_on_failure) > 0:
+                    self.inventory.restrict_to(handler.notified_on_failure)
+
+                    # Resolve the variables first
+                    handler_name = template(play.basedir, handler.name, handler.module_vars)
+                    if handler_name not in fired_names:
+                        self._run_task(play, handler, True)
+                    # prevent duplicate handler includes from running more than once
+                    fired_names[handler_name] = 1
+
+                    host_list = self._trim_unavailable_hosts(play._play_hosts)
+                    if handler.any_errors_fatal and len(host_list) < hosts_count:
+                        play.max_fail_pct = 0
+                    if (hosts_count - len(host_list)) > int((play.max_fail_pct)/100.0 * hosts_count):
+                        host_list = None
+
+                    self.inventory.lift_restriction()
+                    new_list = handler.notified_on_failure[:]
+                    for host in handler.notified_on_failure:
+                        if host in on_hosts:
+                            while host in new_list:
+                                new_list.remove(host)
+                    handler.notified_on_failure = new_list
+
+            continue
+
