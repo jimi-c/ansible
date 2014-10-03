@@ -1419,12 +1419,14 @@ def listify_lookup_plugin_terms(terms, basedir, inject):
             # if not already a list, get ready to evaluate with Jinja2
             # not sure why the "/" is in above code :)
             try:
-                new_terms = template.template(basedir, "{{ %s }}" % terms, inject)
+                new_terms = template.template(basedir, terms, inject, convert_bare=True, fail_on_undefined=C.DEFAULT_UNDEFINED_VAR_BEHAVIOR)
                 if isinstance(new_terms, basestring) and "{{" in new_terms:
                     pass
                 else:
                     terms = new_terms
-            except:
+            except Exception, e:
+                if 'is undefined' in str(e):
+                    raise errors.AnsibleUndefinedVariable('undefined variable in items: %s' % e)
                 pass
 
         if '{' in terms or '[' in terms:
