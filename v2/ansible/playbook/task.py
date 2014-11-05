@@ -54,6 +54,7 @@ class Task(Base):
     _always_run           = FieldAttribute(isa='bool')
     _any_errors_fatal     = FieldAttribute(isa='bool')
     _async                = FieldAttribute(isa='int')
+    _changed_when         = FieldAttribute(isa='string')
     _connection           = FieldAttribute(isa='string')
     _delay                = FieldAttribute(isa='int')
     _delegate_to          = FieldAttribute(isa='string')
@@ -131,9 +132,10 @@ class Task(Base):
     def _munge_loop(self, ds, new_ds, k, v):
         ''' take a lookup plugin name and store it correctly '''
 
-        if self._loop.value is not None:
-            raise AnsibleError("duplicate loop in task: %s" % k)
-        new_ds['loop'] = k
+        loop_name = k.replace("with_", "")
+        if new_ds.get('loop') is not None:
+            raise AnsibleError("duplicate loop in task: %s" % loop_name)
+        new_ds['loop'] = loop_name
         new_ds['loop_args'] = v
 
     def munge(self, ds):
@@ -152,8 +154,8 @@ class Task(Base):
         # use the args parsing class to determine the action, args,
         # and the delegate_to value from the various possible forms
         # supported as legacy
-        args_parser = ModuleArgsParser()
-        (action, args, delegate_to) = args_parser.parse(ds)
+        args_parser = ModuleArgsParser(task_ds=ds)
+        (action, args, delegate_to) = args_parser.parse()
 
         new_ds['action']      = action
         new_ds['args']        = args
@@ -164,7 +166,7 @@ class Task(Base):
                 # we don't want to re-assign these values, which were
                 # determined by the ModuleArgsParser() above
                 continue
-            elif "with_%s" % k in lookup_finder:
+            elif k.replace("with_", "") in lookup_finder:
                 self._munge_loop(ds, new_ds, k, v)
             else:
                 new_ds[k] = v
