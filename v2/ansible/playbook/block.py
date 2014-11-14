@@ -36,10 +36,12 @@ class Block(Base):
     # similar to the 'else' clause for exceptions
     #_otherwise = FieldAttribute(isa='list')
 
-    def __init__(self, parent_block=None, role=None, task_include=None):
+    def __init__(self, parent_block=None, role=None, task_include=None, use_handlers=False):
         self._parent_block = parent_block
-        self._role = role
+        self._role         = role
         self._task_include = task_include
+        self._use_handlers = use_handlers
+
         super(Block, self).__init__()
 
     def get_variables(self):
@@ -48,9 +50,9 @@ class Block(Base):
         return dict()
 
     @staticmethod
-    def load(data, parent_block=None, role=None, task_include=None, loader=None):
-        b = Block(parent_block=parent_block, role=role, task_include=task_include)
-        return b.load_data(data, loader=loader)
+    def load(data, parent_block=None, role=None, task_include=None, use_handlers=False, variable_manager=None, loader=None):
+        b = Block(parent_block=parent_block, role=role, task_include=task_include, use_handlers=use_handlers)
+        return b.load_data(data, variable_manager=variable_manager, loader=loader)
 
     def munge(self, ds):
         '''
@@ -70,17 +72,17 @@ class Block(Base):
         return ds
 
     def _load_block(self, attr, ds):
-        return load_list_of_tasks(ds, block=self, loader=self._loader)
+        return load_list_of_tasks(ds, block=self, role=self._role, variable_manager=self._variable_manager, loader=self._loader, use_handlers=self._use_handlers)
 
     def _load_rescue(self, attr, ds):
-        return load_list_of_tasks(ds, block=self, loader=self._loader)
+        return load_list_of_tasks(ds, block=self, role=self._role, variable_manager=self._variable_manager, loader=self._loader, use_handlers=self._use_handlers)
 
     def _load_always(self, attr, ds):
-        return load_list_of_tasks(ds, block=self, loader=self._loader)
+        return load_list_of_tasks(ds, block=self, role=self._role, variable_manager=self._variable_manager, loader=self._loader, use_handlers=self._use_handlers)
 
     # not currently used
     #def _load_otherwise(self, attr, ds):
-    #    return self._load_list_of_tasks(ds, block=self, loader=self._loader)
+    #    return self._load_list_of_tasks(ds, block=self, role=self._role, variable_manager=self._variable_manager, loader=self._loader, use_handlers=self._use_handlers)
 
     def compile(self):
         '''

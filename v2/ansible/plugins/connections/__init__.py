@@ -19,3 +19,18 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+from ansible import constants as C
+
+__all__ = ['ConnectionBase']
+
+
+class ConnectionBase:
+    '''
+    A base class for connections to contain common code.
+    '''
+
+    def __init__(self, host, connection_info, *args, **kwargs):
+        self._host = host
+        self._connection_info = connection_info
+        self._has_pipelining = False
+

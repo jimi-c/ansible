@@ -24,9 +24,15 @@ from io import FileIO
 
 from six import iteritems, string_types
 
+from jinja2.exceptions import UndefinedError
+
 from ansible.errors import AnsibleParserError
+from ansible.parsing import DataLoader
 from ansible.playbook.attribute import Attribute, FieldAttribute
-from ansible.parsing.yaml import DataLoader
+from ansible.template import Templar
+from ansible.utils.boolean import boolean
+
+from ansible.template import template
 
 class Base:
 
@@ -60,10 +66,14 @@ class Base:
 
         return ds
 
-    def load_data(self, ds, loader=None):
+    def load_data(self, ds, variable_manager=None, loader=None):
         ''' walk the input datastructure and assign any values '''
 
         assert ds is not None
+
+        # the variable manager class is used to manage and merge variables
+        # down to a single dictionary for reference in templating, etc.
+        self._variable_manager = variable_manager
 
         # the data loader class is used to parse data from strings and files
         if loader is not None:
@@ -94,12 +104,23 @@ class Base:
                 else:
                     self._attributes[name] = ds[name]
 
-        # return the constructed object
+        # run early, non-critical validation
         self.validate()
+
+        # cache the datastructure internally
+        self._ds = ds
+
+        # return the constructed object
         return self
+
+    def get_ds(self):
+        return self._ds
 
     def get_loader(self):
         return self._loader
+
+    def get_variable_manager(self):
+        return self._variable_manager
 
     def _validate_attributes(self, ds):
         '''
@@ -112,7 +133,7 @@ class Base:
             if key not in valid_attrs:
                 raise AnsibleParserError("'%s' is not a valid attribute for a %s" % (key, self.__class__.__name__), obj=ds)
 
-    def validate(self):
+    def validate(self, all_vars=dict()):
         ''' validation that is done at parse time, not load time '''
 
         # walk all fields in the object
@@ -123,14 +144,89 @@ class Base:
             if method:
                 method(self, attribute)
 
-    def post_validate(self, runner_context):
+    def post_validate(self, all_vars=dict()):
         '''
         we can't tell that everything is of the right type until we have
         all the variables.  Run basic types (from isa) as well as
         any _post_validate_<foo> functions.
         '''
 
-        raise exception.NotImplementedError
+        basedir = None
+        if self._loader is not None:
+            basedir = self._loader.get_basedir()
+
+        templar = Templar(basedir=basedir, variables=all_vars)
+
+        for (name, attribute) in iteritems(self._get_base_attributes()):
+
+            if self._attributes[name] is None:
+                if not attribute.required:
+                    continue
+                else:
+                    raise AnsibleParserError("the field '%s' is required but was not set" % name)
+
+            try:
+                # if the attribute contains a variable, template it now
+                value = templar.template(self._attributes[name])
+                
+                # run the post-validator if present
+                method = getattr(self, '_post_validate_%s' % name, None)
+                if method:
+                    method(self, attribute, value)
+                else:
+                    # otherwise, just make sure the attribute is of the type it should be
+                    if attribute.isa == 'string':
+                        value = unicode(value)
+                    elif attribute.isa == 'int':
+                        value = int(value)
+                    elif attribute.isa == 'bool':
+                        value = boolean(value)
+                    elif attribute.isa == 'list':
+                        if not isinstance(value, list):
+                            value = [ value ]
+                    elif attribute.isa == 'dict' and not isinstance(value, dict):
+                        raise TypeError()
+
+                    # and assign the massaged value back to the attribute field
+                    self._attributes[name] = value
+
+            except (TypeError, ValueError), e:
+                #raise AnsibleParserError("the field '%s' has an invalid value, and could not be converted to an %s" % (name, attribute.isa), obj=self.get_ds())
+                raise AnsibleParserError("the field '%s' has an invalid value (%s), and could not be converted to an %s. Error was: %s" % (name, value, attribute.isa, e))
+            except UndefinedError:
+                raise AnsibleParserError("the field '%s' has an invalid value, which appears to include a variable that is undefined" % (name,))
+
+    def serialize(self):
+        '''
+        Serializes the object derived from the base object into
+        a dictionary of values. This only serializes the field
+        attributes for the object, so this may need to be overridden
+        for any classes which wish to add additional items not stored
+        as field attributes.
+        '''
+
+        repr = dict()
+
+        for (name, attribute) in iteritems(self._get_base_attributes()):
+            repr[name] = getattr(self, name)
+
+        return repr
+
+    def deserialize(self, data):
+        '''
+        Given a dictionary of values, load up the field attributes for
+        this object. As with serialize(), if there are any non-field
+        attribute data members, this method will need to be overridden
+        and extended.
+        '''
+
+        assert isinstance(data, dict)
+
+        for (name, attribute) in iteritems(self._get_base_attributes()):
+            if name in data:
+                setattr(self, name, data[name])
+            else:
+                setattr(self, name, attribute.default)
 
     def __getattr__(self, needle):
 

@@ -27,7 +27,7 @@ from hashlib import sha1
 from types import NoneType
 
 from ansible.errors import AnsibleError, AnsibleParserError
-from ansible.parsing.yaml import DataLoader
+from ansible.parsing import DataLoader
 from ansible.playbook.attribute import FieldAttribute
 from ansible.playbook.base import Base
 from ansible.playbook.helpers import load_list_of_blocks, compile_block_list
@@ -61,6 +61,8 @@ class Role:
         self._default_vars     = dict()
         self._role_vars        = dict()
 
+        self._has_run          = False
+
     def __repr__(self):
         return self.get_name()
 
@@ -79,10 +81,11 @@ class Role:
         return r
 
     def _load_role_data(self, role_include, parent_role=None):
-        self._role_name   = role_include.role
-        self._role_path   = role_include.get_role_path()
-        self._role_params = role_include.get_role_params()
-        self._loader      = role_include.get_loader()
+        self._role_name        = role_include.role
+        self._role_path        = role_include.get_role_path()
+        self._role_params      = role_include.get_role_params()
+        self._variable_manager = role_include.get_variable_manager()
+        self._loader           = role_include.get_loader()
 
         if parent_role:
             self.add_parent(parent_role)
@@ -199,6 +202,9 @@ class Role:
     def get_handler_blocks(self):
         return self._handler_blocks[:]
 
+    def has_run(self):
+        return self._has_run
+
     def compile(self):
         '''
         Returns the task list for this role, which is created by first
@@ -216,3 +222,8 @@ class Role:
 
         return task_list
 
+    def serialize(self):
+        res = dict()
+        res['_role_name'] = self._role_name
+        res['_role_path'] = self._role_path
+        return res

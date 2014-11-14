@@ -20,15 +20,15 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 from ansible.playbook.base import Base
+from ansible.playbook.block import Block
 from ansible.playbook.attribute import Attribute, FieldAttribute
 
 from ansible.errors import AnsibleError
 
 from ansible.parsing.splitter import parse_kv
 from ansible.parsing.mod_args import ModuleArgsParser
-from ansible.parsing.yaml import DataLoader
 from ansible.parsing.yaml.objects import AnsibleBaseYAMLObject, AnsibleMapping
-from ansible.plugins import module_finder, lookup_finder
+from ansible.plugins import module_loader, lookup_loader
 
 class Task(Base):
 
@@ -54,10 +54,10 @@ class Task(Base):
 
     _always_run           = FieldAttribute(isa='bool')
     _any_errors_fatal     = FieldAttribute(isa='bool')
-    _async                = FieldAttribute(isa='int')
+    _async                = FieldAttribute(isa='int', default=0)
     _changed_when         = FieldAttribute(isa='string')
     _connection           = FieldAttribute(isa='string')
-    _delay                = FieldAttribute(isa='int')
+    _delay                = FieldAttribute(isa='int', default=0)
     _delegate_to          = FieldAttribute(isa='string')
     _environment          = FieldAttribute(isa='dict')
     _failed_when          = FieldAttribute(isa='string')
@@ -75,10 +75,10 @@ class Task(Base):
 
     _no_log               = FieldAttribute(isa='bool')
     _notify               = FieldAttribute(isa='list')
-    _poll                 = FieldAttribute(isa='integer')
+    _poll                 = FieldAttribute(isa='int')
     _register             = FieldAttribute(isa='string')
     _remote_user          = FieldAttribute(isa='string')
-    _retries              = FieldAttribute(isa='integer')
+    _retries              = FieldAttribute(isa='int', default=1)
     _run_once             = FieldAttribute(isa='bool')
     _su                   = FieldAttribute(isa='bool')
     _su_pass              = FieldAttribute(isa='string')
@@ -126,9 +126,9 @@ class Task(Base):
             return buf
 
     @staticmethod
-    def load(data, block=None, role=None, task_include=None, loader=None):
+    def load(data, block=None, role=None, task_include=None, variable_manager=None, loader=None):
         t = Task(block=block, role=role, task_include=task_include)
-        return t.load_data(data, loader=loader)
+        return t.load_data(data, variable_manager=variable_manager, loader=loader)
 
     def __repr__(self):
         ''' returns a human readable representation of the task '''
@@ -173,12 +173,15 @@ class Task(Base):
                 # we don't want to re-assign these values, which were
                 # determined by the ModuleArgsParser() above
                 continue
-            elif k.replace("with_", "") in lookup_finder:
+            elif k.replace("with_", "") in lookup_loader:
                 self._munge_loop(ds, new_ds, k, v)
             else:
                 new_ds[k] = v
 
         return new_ds
+
+    def get_vars(self):
+        return self.serialize()
 
     def compile(self):
         '''
@@ -188,3 +191,4 @@ class Task(Base):
         '''
 
         return [self]
+

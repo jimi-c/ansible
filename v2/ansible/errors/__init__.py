@@ -21,7 +21,7 @@ __metaclass__ = type
 
 import os
 
-from ansible.parsing.yaml.strings import *
+from ansible.errors.yaml_strings import *
 
 class AnsibleError(Exception):
     '''
@@ -157,4 +157,12 @@ class AnsibleModuleError(AnsibleRuntimeError):
 
 class AnsibleConnectionFailure(AnsibleRuntimeError):
     ''' the transport / connection_plugin had a fatal error '''
+    pass
+
+class AnsibleFilterError(AnsibleRuntimeError):
+    ''' a templating failure '''
+    pass
+
+class AnsibleUndefinedVariable(AnsibleRuntimeError):
+    ''' a templating failure '''
     pass

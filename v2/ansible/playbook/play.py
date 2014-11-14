@@ -21,8 +21,6 @@ __metaclass__ = type
 
 from ansible.errors import AnsibleError, AnsibleParserError
 
-from ansible.parsing.yaml import DataLoader
-
 from ansible.playbook.attribute import Attribute, FieldAttribute
 from ansible.playbook.base import Base
 from ansible.playbook.helpers import load_list_of_blocks, load_list_of_roles, compile_block_list
@@ -51,14 +49,16 @@ class Play(Base):
     _accelerate_port     = FieldAttribute(isa='int', default=5099)
     _connection          = FieldAttribute(isa='string', default='smart')
     _gather_facts        = FieldAttribute(isa='string', default='smart')
-    _hosts               = FieldAttribute(isa='list', default=[])
+    _hosts               = FieldAttribute(isa='list', default=[], required=True)
     _name                = FieldAttribute(isa='string', default='<no name specified>')
     _port                = FieldAttribute(isa='int', default=22)
     _remote_user         = FieldAttribute(isa='string', default='root')
     _su                  = FieldAttribute(isa='bool', default=False)
     _su_user             = FieldAttribute(isa='string', default='root')
+    _su_pass             = FieldAttribute(isa='string')
     _sudo                = FieldAttribute(isa='bool', default=False)
     _sudo_user           = FieldAttribute(isa='string', default='root')
+    _sudo_pass           = FieldAttribute(isa='string')
     _tags                = FieldAttribute(isa='list', default=[])
 
     # Variable Attributes
@@ -81,6 +81,7 @@ class Play(Base):
     _max_fail_percentage = FieldAttribute(isa='string', default='0')
     _no_log              = FieldAttribute(isa='bool', default=False)
     _serial              = FieldAttribute(isa='int', default=0)
+    _strategy            = FieldAttribute(isa='string', default='linear')
 
     # =================================================================================
 
@@ -95,9 +96,9 @@ class Play(Base):
        return "PLAY: %s" % self._attributes.get('name')
 
     @staticmethod
-    def load(data, loader=None):
+    def load(data, variable_manager=None, loader=None):
         p = Play()
-        return p.load_data(data, loader=loader)
+        return p.load_data(data, variable_manager=variable_manager, loader=loader)
 
     def munge(self, ds):
         '''
@@ -125,35 +126,35 @@ class Play(Base):
         Loads a list of blocks from a list which may be mixed tasks/blocks.
         Bare tasks outside of a block are given an implicit block.
         '''
-        return load_list_of_blocks(ds, loader=self._loader)
+        return load_list_of_blocks(ds, variable_manager=self._variable_manager, loader=self._loader)
 
     def _load_pre_tasks(self, attr, ds):
         '''
         Loads a list of blocks from a list which may be mixed tasks/blocks.
         Bare tasks outside of a block are given an implicit block.
         '''
-        return load_list_of_blocks(ds, loader=self._loader)
+        return load_list_of_blocks(ds, variable_manager=self._variable_manager, loader=self._loader)
 
     def _load_post_tasks(self, attr, ds):
         '''
         Loads a list of blocks from a list which may be mixed tasks/blocks.
         Bare tasks outside of a block are given an implicit block.
         '''
-        return load_list_of_blocks(ds, loader=self._loader)
+        return load_list_of_blocks(ds, variable_manager=self._variable_manager, loader=self._loader)
 
     def _load_handlers(self, attr, ds):
         '''
         Loads a list of blocks from a list which may be mixed handlers/blocks.
         Bare handlers outside of a block are given an implicit block.
         '''
-        return load_list_of_blocks(ds, loader=self._loader)
+        return load_list_of_blocks(ds, use_handlers=True, variable_manager=self._variable_manager, loader=self._loader)
 
     def _load_roles(self, attr, ds):
         '''
         Loads and returns a list of RoleInclude objects from the datastructure
         list of role definitions
         '''
-        return load_list_of_roles(ds, loader=self._loader)
+        return load_list_of_roles(ds, variable_manager=self._variable_manager, loader=self._loader)
 
     # FIXME: post_validation needs to ensure that su/sudo are not both set
 
@@ -194,3 +195,15 @@ class Play(Base):
         task_list.extend(compile_block_list(self.post_tasks))
 
         return task_list
+
+    def get_vars(self):
+        return self.vars.copy()
+
+    def get_vars_files(self):
+        return self.vars_files
+
+    def get_handlers(self):
+        return self.handlers[:]
+
+    def get_roles(self):
+        return self.roles[:]
