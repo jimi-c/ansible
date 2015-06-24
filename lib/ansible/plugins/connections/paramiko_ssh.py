@@ -217,17 +217,13 @@ class Connection(ConnectionBase):
 
         self._display.vvv("EXEC %s" % cmd, host=self._connection_info.remote_addr)
 
-
-        if sudoable:
-            cmd, self.prompt, self.success_key = self._connection_info.make_become_cmd(cmd)
-
         no_prompt_out = ''
         no_prompt_err = ''
         become_output = ''
 
         try:
             chan.exec_command(cmd)
-            if self.prompt:
+            if self._connection_info.prompt:
                 while True:
                     debug('Waiting for Privilege Escalation input')
                     if self.check_become_success(become_output) or self.check_password_prompt(become_output):
