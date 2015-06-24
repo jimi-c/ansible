@@ -425,7 +425,7 @@ class ActionBase:
         debug("done with _execute_module (%s, %s)" % (module_name, module_args))
         return data
 
-    def _low_level_execute_command(self, cmd, tmp, sudoable=True, in_data=None):
+    def _low_level_execute_command(self, cmd, tmp, executable=None, sudoable=True, in_data=None):
         '''
         This is the function which executes the low level shell command, which
         may be commands to create/remove directories for temporary files, or to
@@ -438,12 +438,9 @@ class ActionBase:
             debug("no command, exiting _low_level_execute_command()")
             return dict(stdout='', stderr='')
 
-        #FIXME: disabled as this should happen in the connection plugin, verify before removing
-        #prompt      = None
-        #success_key = None
-        #
-        #if sudoable:
-        #    cmd, prompt, success_key = self._connection_info.make_become_cmd(cmd)
+        print("in _low_level_execute_command, executable is: %s" % executable)
+        if sudoable:
+            cmd = self._connection_info.make_become_cmd(cmd, executable=executable)
 
         debug("executing the command %s through the connection" % cmd)
         rc, stdin, stdout, stderr = self._connection.exec_command(cmd, tmp, in_data=in_data, sudoable=sudoable)
