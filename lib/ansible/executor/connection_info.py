@@ -319,7 +319,6 @@ class ConnectionInformation:
         prompt      = None
         success_key = None
 
-        print("in make_become_cmd, executable is: %s" % executable)
         if executable is None:
             executable = C.DEFAULT_EXECUTABLE
 
@@ -375,7 +374,7 @@ class ConnectionInformation:
             self.success_key = success_key
             return ('%s -c ' % executable) + pipes.quote(becomecmd)
 
-        return ('%s -c ' % executable) + pipes.quote(cmd)
+        return cmd
 
     def _get_fields(self):
         return [i for i in self.__dict__.keys() if i[:1] != '_']
