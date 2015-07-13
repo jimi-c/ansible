@@ -36,9 +36,8 @@ class ActionModule(ActionBase):
     def run(self, tmp=None, task_vars=dict()):
         ''' handler for fetch operations '''
 
-        # FIXME: is this even required anymore?
-        #if self.runner.noop_on_check(inject):
-        #    return ReturnData(conn=conn, comm_ok=True, result=dict(skipped=True, msg='check mode not (yet) supported for this module'))
+        if self._connection_info.check_mode:
+            return dict(skipped=True, msg='check mode not (yet) supported for this module')
 
         source            = self._task.args.get('src', None)
         dest              = self._task.args.get('dest', None)
@@ -52,7 +51,7 @@ class ActionModule(ActionBase):
         if source is None or dest is None:
             return dict(failed=True, msg="src and dest are required")
 
-        source = self._shell.join_path(source)
+        source = self._connection._shell.join_path(source)
         source = self._remote_expand_user(source, tmp)
 
         # calculate checksum for the remote file
@@ -78,7 +77,7 @@ class ActionModule(ActionBase):
                 pass
 
         # calculate the destination name
-        if os.path.sep not in self._shell.join_path('a', ''):
+        if os.path.sep not in self._connection._shell.join_path('a', ''):
             source_local = source.replace('\\', '/')
         else:
             source_local = source

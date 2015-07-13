@@ -60,6 +60,10 @@ class TaskQueueManager:
         self._options          = options
         self._stats            = AggregateStats()
         self.passwords         = passwords
+        self._stdout_callback  = stdout_callback
+
+        self._callbacks_loaded = False
+        self._callback_plugins = []
 
         # a special flag to help us exit cleanly
         self._terminated = False
@@ -72,9 +76,6 @@ class TaskQueueManager:
         self._unreachable_hosts = dict()
 
         self._final_q = multiprocessing.Queue()
-
-        # load callback plugins
-        self._callback_plugins = self._load_callbacks(stdout_callback)
 
         # create the pool of worker threads, based on the number of forks specified
         try:
@@ -117,21 +118,22 @@ class TaskQueueManager:
         for handler in handler_list:
             self._notified_handlers[handler.get_name()] = []
 
-    def _load_callbacks(self, stdout_callback):
+    def load_callbacks(self):
         '''
         Loads all available callbacks, with the exception of those which
         utilize the CALLBACK_TYPE option. When CALLBACK_TYPE is set to 'stdout',
         only one such callback plugin will be loaded.
         '''
 
-        loaded_plugins = []
+        if self._callbacks_loaded:
+            return
 
         stdout_callback_loaded = False
-        if stdout_callback is None:
-            stdout_callback = C.DEFAULT_STDOUT_CALLBACK
+        if self._stdout_callback is None:
+            self._stdout_callback = C.DEFAULT_STDOUT_CALLBACK
 
-        if stdout_callback not in callback_loader:
-            raise AnsibleError("Invalid callback for stdout specified: %s" % stdout_callback)
+        if self._stdout_callback not in callback_loader:
+            raise AnsibleError("Invalid callback for stdout specified: %s" % self._stdout_callback)
 
         for callback_plugin in callback_loader.all(class_only=True):
             if hasattr(callback_plugin, 'CALLBACK_VERSION') and callback_plugin.CALLBACK_VERSION >= 2.0:
@@ -141,15 +143,17 @@ class TaskQueueManager:
                 callback_type = getattr(callback_plugin, 'CALLBACK_TYPE', None)
                 (callback_name, _) = os.path.splitext(os.path.basename(callback_plugin._original_path))
                 if callback_type == 'stdout':
-                    if callback_name != stdout_callback or stdout_callback_loaded:
+                    if callback_name != self._stdout_callback or stdout_callback_loaded:
                         continue
                     stdout_callback_loaded = True
+                elif C.DEFAULT_CALLBACK_WHITELIST is None or callback_name not in C.DEFAULT_CALLBACK_WHITELIST:
+                    continue
 
-                loaded_plugins.append(callback_plugin(self._display))
+                self._callback_plugins.append(callback_plugin(self._display))
             else:
-                loaded_plugins.append(callback_plugin())
+                self._callback_plugins.append(callback_plugin())
 
-        return loaded_plugins
+        self._callbacks_loaded = True
 
     def _do_var_prompt(self, varname, private=True, prompt=None, encrypt=None, confirm=False, salt_size=None, salt=None, default=None):
 
@@ -203,6 +207,9 @@ class TaskQueueManager:
         a given task (meaning no hosts move on to the next task until all hosts
         are done with the current task).
         '''
+
+        if not self._callbacks_loaded:
+            self.load_callbacks()
 
         if play.vars_prompt:
             for var in play.vars_prompt:
@@ -289,7 +296,7 @@ class TaskQueueManager:
                 continue
             methods = [
                 getattr(callback_plugin, method_name, None),
-                getattr(callback_plugin, 'on_any', None)
+                getattr(callback_plugin, 'v2_on_any', None)
             ]
             for method in methods:
                 if method is not None:

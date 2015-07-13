@@ -17,15 +17,13 @@
 
 ########################################################
 from ansible import constants as C
-from ansible.errors import AnsibleError, AnsibleOptionsError
+from ansible.errors import AnsibleOptionsError
 from ansible.executor.task_queue_manager import TaskQueueManager
 from ansible.inventory import Inventory
 from ansible.parsing import DataLoader
 from ansible.parsing.splitter import parse_kv
 from ansible.playbook.play import Play
 from ansible.cli import CLI
-from ansible.utils.display import Display
-from ansible.utils.vault import read_vault_file
 from ansible.vars import VariableManager
 
 ########################################################
@@ -76,6 +74,9 @@ class AdHocCLI(CLI):
     def run(self):
         ''' use Runner lib to do SSH things '''
 
+        super(AdHocCLI, self).run()
+
+
         # only thing left should be host pattern
         pattern = self.args[0]
 
@@ -93,7 +94,7 @@ class AdHocCLI(CLI):
 
         if self.options.vault_password_file:
             # read vault_pass from a file
-            vault_pass = read_vault_file(self.options.vault_password_file)
+            vault_pass = CLI.read_vault_password_file(self.options.vault_password_file)
         elif self.options.ask_vault_pass:
             vault_pass = self.ask_vault_passwords(ask_vault_pass=True, ask_new_vault_pass=False, confirm_new=False)[0]
 
@@ -127,6 +128,11 @@ class AdHocCLI(CLI):
         play_ds = self._play_ds(pattern)
         play = Play().load(play_ds, variable_manager=variable_manager, loader=loader)
 
+        if self.options.one_line:
+            cb = 'oneline'
+        else:
+            cb = 'minimal'
+
         # now create a task queue manager to execute the play
         self._tqm = None
         try:
@@ -137,7 +143,7 @@ class AdHocCLI(CLI):
                     display=self.display,
                     options=self.options,
                     passwords=passwords,
-                    stdout_callback='minimal',
+                    stdout_callback=cb,
                 )
             result = self._tqm.run(play)
         finally:

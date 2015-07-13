@@ -66,7 +66,6 @@ import grp
 import pwd
 import platform
 import errno
-import tempfile
 from itertools import imap, repeat
 
 try:
@@ -113,7 +112,6 @@ try:
     from systemd import journal
     has_journal = True
 except ImportError:
-    import syslog
     has_journal = False
 
 try:
@@ -121,10 +119,10 @@ try:
 except ImportError:
     # a replacement for literal_eval that works with python 2.4. from: 
     # https://mail.python.org/pipermail/python-list/2009-September/551880.html
-    # which is essentially a cut/past from an earlier (2.6) version of python's
+    # which is essentially a cut/paste from an earlier (2.6) version of python's
     # ast.py
-    from compiler import parse
-    from compiler.ast import *
+    from compiler import ast, parse
+
     def _literal_eval(node_or_string):
         """
         Safely evaluate an expression node or a string containing a Python
@@ -135,21 +133,22 @@ except ImportError:
         _safe_names = {'None': None, 'True': True, 'False': False}
         if isinstance(node_or_string, basestring):
             node_or_string = parse(node_or_string, mode='eval')
-        if isinstance(node_or_string, Expression):
+        if isinstance(node_or_string, ast.Expression):
             node_or_string = node_or_string.node
+
         def _convert(node):
-            if isinstance(node, Const) and isinstance(node.value, (basestring, int, float, long, complex)):
-                 return node.value
-            elif isinstance(node, Tuple):
+            if isinstance(node, ast.Const) and isinstance(node.value, (basestring, int, float, long, complex)):
+                return node.value
+            elif isinstance(node, ast.Tuple):
                 return tuple(map(_convert, node.nodes))
-            elif isinstance(node, List):
+            elif isinstance(node, ast.List):
                 return list(map(_convert, node.nodes))
-            elif isinstance(node, Dict):
+            elif isinstance(node, ast.Dict):
                 return dict((_convert(k), _convert(v)) for k, v in node.items)
-            elif isinstance(node, Name):
+            elif isinstance(node, ast.Name):
                 if node.name in _safe_names:
                     return _safe_names[node.name]
-            elif isinstance(node, UnarySub):
+            elif isinstance(node, ast.UnarySub):
                 return -_convert(node.expr)
             raise ValueError('malformed string')
         return _convert(node_or_string)
@@ -352,9 +351,9 @@ class AnsibleModule(object):
         self.check_mode = False
         self.no_log = no_log
         self.cleanup_files = []
-        
+
         self.aliases = {}
-        
+
         if add_file_common_args:
             for k, v in FILE_COMMON_ARGUMENTS.iteritems():
                 if k not in self.argument_spec:
@@ -367,7 +366,7 @@ class AnsibleModule(object):
         self.params = self._load_params()
 
         self._legal_inputs = ['_ansible_check_mode', '_ansible_no_log']
-        
+
         self.aliases = self._handle_aliases()
 
         if check_invalid_arguments:
@@ -381,10 +380,20 @@ class AnsibleModule(object):
 
         self._set_defaults(pre=True)
 
+
+        self._CHECK_ARGUMENT_TYPES_DISPATCHER = {
+                'str': self._check_type_str,
+                'list': self._check_type_list,
+                'dict': self._check_type_dict,
+                'bool': self._check_type_bool,
+                'int': self._check_type_int,
+                'float': self._check_type_float,
+                'path': self._check_type_path,
+            }
         if not bypass_checks:
             self._check_required_arguments()
-            self._check_argument_values()
             self._check_argument_types()
+            self._check_argument_values()
             self._check_required_together(required_together)
             self._check_required_one_of(required_one_of)
             self._check_required_if(required_if)
@@ -680,7 +689,6 @@ class AnsibleModule(object):
                         new_underlying_stat = os.stat(path)
                         if underlying_stat.st_mode != new_underlying_stat.st_mode:
                             os.chmod(path, stat.S_IMODE(underlying_stat.st_mode))
-                        q_stat = os.stat(path)
             except OSError, e:
                 if os.path.islink(path) and e.errno == errno.EPERM:  # Can't set mode on symbolic links
                     pass
@@ -709,7 +717,8 @@ class AnsibleModule(object):
                 operator = match.group('operator')
                 perms = match.group('perms')
 
-                if users == 'a': users = 'ugo'
+                if users == 'a':
+                    users = 'ugo'
 
                 for user in users:
                     mode_to_apply = self._get_octal_mode_from_symbolic_perms(path_stat, user, perms)
@@ -899,11 +908,11 @@ class AnsibleModule(object):
 
     def _check_for_check_mode(self):
         for (k,v) in self.params.iteritems():
-            if k == '_ansible_check_mode':
+            if k == '_ansible_check_mode' and v:
                 if not self.supports_check_mode:
                     self.exit_json(skipped=True, msg="remote module does not support check mode")
-                if self.supports_check_mode:
-                    self.check_mode = True
+                self.check_mode = True
+                break
 
     def _check_for_no_log(self):
         for (k,v) in self.params.iteritems():
@@ -969,7 +978,7 @@ class AnsibleModule(object):
             missing = []
             if key in self.params and self.params[key] == val:
                 for check in requirements:
-                    count = self._count_terms(check)
+                    count = self._count_terms((check,))
                     if count == 0:
                         missing.append(check)
             if len(missing) > 0:
@@ -1022,6 +1031,76 @@ class AnsibleModule(object):
                 return (str, e)
             return str
 
+    def _check_type_str(self, value):
+        if isinstance(value, basestring):
+            return value
+        # Note: This could throw a unicode error if value's __str__() method
+        # returns non-ascii.  Have to port utils.to_bytes() if that happens
+        return str(value)
+
+    def _check_type_list(self, value):
+        if isinstance(value, list):
+            return value
+
+        if isinstance(value, basestring):
+            return value.split(",")
+        elif isinstance(value, int) or isinstance(value, float):
+            return [ str(value) ]
+
+        raise TypeError('%s cannot be converted to a list' % type(value))
+
+    def _check_type_dict(self, value):
+        if isinstance(value, dict):
+            return value
+
+        if isinstance(value, basestring):
+            if value.startswith("{"):
+                try:
+                    return json.loads(value)
+                except:
+                    (result, exc) = self.safe_eval(value, dict(), include_exceptions=True)
+                    if exc is not None:
+                        raise TypeError('unable to evaluate string as dictionary')
+                    return result
+            elif '=' in value:
+                return dict([x.strip().split("=", 1) for x in value.split(",")])
+            else:
+                raise TypeError("dictionary requested, could not parse JSON or key=value")
+
+        raise TypeError('%s cannot be converted to a dict' % type(value))
+
+    def _check_type_bool(self, value):
+        if isinstance(value, bool):
+            return value
+
+        if isinstance(value, basestring):
+            return self.boolean(value)
+
+        raise TypeError('%s cannot be converted to a bool' % type(value))
+
+    def _check_type_int(self, value):
+        if isinstance(value, int):
+            return value
+
+        if isinstance(value, basestring):
+            return int(value)
+
+        raise TypeError('%s cannot be converted to an int' % type(value))
+
+    def _check_type_float(self, value):
+        if isinstance(value, float):
+            return value
+
+        if isinstance(value, basestring):
+            return float(value)
+
+        raise TypeError('%s cannot be converted to a float' % type(value))
+
+    def _check_type_path(self, value):
+        value = self._check_type_str(value)
+        return os.path.expanduser(os.path.expandvars(value))
+
+
     def _check_argument_types(self):
         ''' ensure all arguments have the requested type '''
         for (k, v) in self.argument_spec.iteritems():
@@ -1032,62 +1111,15 @@ class AnsibleModule(object):
                 continue
 
             value = self.params[k]
-            is_invalid = False
 
             try:
-                if wanted == 'str':
-                    if not isinstance(value, basestring):
-                        self.params[k] = str(value)
-                elif wanted == 'list':
-                    if not isinstance(value, list):
-                        if isinstance(value, basestring):
-                            self.params[k] = value.split(",")
-                        elif isinstance(value, int) or isinstance(value, float):
-                            self.params[k] = [ str(value) ]
-                        else:
-                            is_invalid = True
-                elif wanted == 'dict':
-                    if not isinstance(value, dict):
-                        if isinstance(value, basestring):
-                            if value.startswith("{"):
-                                try:
-                                    self.params[k] = json.loads(value)
-                                except:
-                                    (result, exc) = self.safe_eval(value, dict(), include_exceptions=True)
-                                    if exc is not None:
-                                        self.fail_json(msg="unable to evaluate dictionary for %s" % k)
-                                    self.params[k] = result
-                            elif '=' in value:
-                                self.params[k] = dict([x.strip().split("=", 1) for x in value.split(",")])
-                            else:
-                                self.fail_json(msg="dictionary requested, could not parse JSON or key=value")
-                        else:
-                            is_invalid = True
-                elif wanted == 'bool':
-                    if not isinstance(value, bool):
-                        if isinstance(value, basestring):
-                            self.params[k] = self.boolean(value)
-                        else:
-                            is_invalid = True
-                elif wanted == 'int':
-                    if not isinstance(value, int):
-                        if isinstance(value, basestring):
-                            self.params[k] = int(value)
-                        else:
-                            is_invalid = True
-                elif wanted == 'float':
-                    if not isinstance(value, float):
-                        if isinstance(value, basestring):
-                            self.params[k] = float(value)
-                        else:
-                            is_invalid = True
-                else:
-                    self.fail_json(msg="implementation error: unknown type %s requested for %s" % (wanted, k))
-
-                if is_invalid:
-                    self.fail_json(msg="argument %s is of invalid type: %s, required: %s" % (k, type(value), wanted))
-            except ValueError, e:
-                self.fail_json(msg="value of argument %s is not of type %s and we were unable to automatically convert" % (k, wanted))
+                type_checker = self._CHECK_ARGUMENT_TYPES_DISPATCHER[wanted]
+            except KeyError:
+                self.fail_json(msg="implementation error: unknown type %s requested for %s" % (wanted, k))
+            try:
+                self.params[k] = type_checker(value)
+            except (TypeError, ValueError):
+                self.fail_json(msg="argument %s is of type %s and we were unable to convert to %s" % (k, type(value), wanted))
 
     def _set_defaults(self, pre=True):
         for (k,v) in self.argument_spec.iteritems():
@@ -1158,7 +1190,7 @@ class AnsibleModule(object):
                 journal_args.append((arg.upper(), str(log_args[arg])))
             try:
                 journal.send("%s %s" % (module, msg), **dict(journal_args))
-            except IOError, e:
+            except IOError:
                 # fall back to syslog since logging to journal failed
                 syslog.openlog(str(module), 0, syslog.LOG_USER)
                 syslog.syslog(syslog.LOG_INFO, msg) #1
@@ -1568,7 +1600,7 @@ class AnsibleModule(object):
                 # if we're checking for prompts, do it now
                 if prompt_re:
                     if prompt_re.search(stdout) and not data:
-                         return (257, stdout, "A prompt was encountered while running a command, but no input data was specified")
+                        return (257, stdout, "A prompt was encountered while running a command, but no input data was specified")
                 # only break out if no pipes are left to read or
                 # the pipes are completely read and
                 # the process is terminated

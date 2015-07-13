@@ -601,6 +601,8 @@ class Facts(object):
         self.facts['date_time']['time'] = now.strftime('%H:%M:%S')
         self.facts['date_time']['iso8601_micro'] = now.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.facts['date_time']['iso8601'] = now.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.facts['date_time']['iso8601_basic'] = now.strftime("%Y%m%dT%H%M%S%f")
+        self.facts['date_time']['iso8601_basic_short'] = now.strftime("%Y%m%dT%H%M%S")
         self.facts['date_time']['tz'] = time.strftime("%Z")
         self.facts['date_time']['tz_offset'] = time.strftime("%z")
 
@@ -974,7 +976,7 @@ class LinuxHardware(Hardware):
 
                     part['start'] = get_file_content(part_sysdir + "/start",0)
                     part['sectors'] = get_file_content(part_sysdir + "/size",0)
-                    part['sectorsize'] = get_file_content(part_sysdir + "/queue/physical_block_size")
+                    part['sectorsize'] = get_file_content(part_sysdir + "/queue/logical_block_size")
                     if not part['sectorsize']:
                         part['sectorsize'] = get_file_content(part_sysdir + "/queue/hw_sector_size",512)
                     part['size'] = module.pretty_bytes((float(part['sectors']) * float(part['sectorsize'])))
@@ -991,7 +993,7 @@ class LinuxHardware(Hardware):
             d['sectors'] = get_file_content(sysdir + "/size")
             if not d['sectors']:
                 d['sectors'] = 0
-            d['sectorsize'] = get_file_content(sysdir + "/queue/physical_block_size")
+            d['sectorsize'] = get_file_content(sysdir + "/queue/logical_block_size")
             if not d['sectorsize']:
                 d['sectorsize'] = get_file_content(sysdir + "/queue/hw_sector_size",512)
             d['size'] = module.pretty_bytes(float(d['sectors']) * float(d['sectorsize']))
@@ -1997,7 +1999,7 @@ class GenericBsdIfconfigNetwork(Network):
 
         return interface['v4'], interface['v6']
 
-    def get_interfaces_info(self, ifconfig_path):
+    def get_interfaces_info(self, ifconfig_path, ifconfig_options='-a'):
         interfaces = {}
         current_if = {}
         ips = dict(
@@ -2007,7 +2009,7 @@ class GenericBsdIfconfigNetwork(Network):
         # FreeBSD, DragonflyBSD, NetBSD, OpenBSD and OS X all implicitly add '-a'
         # when running the command 'ifconfig'.
         # Solaris must explicitly run the command 'ifconfig -a'.
-        rc, out, err = module.run_command([ifconfig_path, '-a'])
+        rc, out, err = module.run_command([ifconfig_path, ifconfig_options])
 
         for line in out.split('\n'):
 
@@ -2177,14 +2179,14 @@ class AIXNetwork(GenericBsdIfconfigNetwork, Network):
     platform = 'AIX'
 
     # AIX 'ifconfig -a' does not have three words in the interface line
-    def get_interfaces_info(self, ifconfig_path):
+    def get_interfaces_info(self, ifconfig_path, ifconfig_options):
         interfaces = {}
         current_if = {}
         ips = dict(
             all_ipv4_addresses = [],
             all_ipv6_addresses = [],
         )
-        rc, out, err = module.run_command([ifconfig_path, '-a'])
+        rc, out, err = module.run_command([ifconfig_path, ifconfig_options])
 
         for line in out.split('\n'):
 
@@ -2263,6 +2265,10 @@ class OpenBSDNetwork(GenericBsdIfconfigNetwork, Network):
     It uses the GenericBsdIfconfigNetwork.
     """
     platform = 'OpenBSD'
+
+    # OpenBSD 'ifconfig -a' does not have information about aliases
+    def get_interfaces_info(self, ifconfig_path, ifconfig_options='-aA'):
+       return super(OpenBSDNetwork, self).get_interfaces_info(ifconfig_path, ifconfig_options)
 
     # Return macaddress instead of lladdr
     def parse_lladdr_line(self, words, current_if, ips):

@@ -87,12 +87,12 @@ MAGIC_VARIABLE_MAPPING = dict(
    become_flags     = ('ansible_become_flags',),
    sudo             = ('ansible_sudo',),
    sudo_user        = ('ansible_sudo_user',),
-   sudo_pass        = ('ansible_sudo_password',),
+   sudo_pass        = ('ansible_sudo_password', 'ansible_sudo_pass'),
    sudo_exe         = ('ansible_sudo_exe',),
    sudo_flags       = ('ansible_sudo_flags',),
    su               = ('ansible_su',),
    su_user          = ('ansible_su_user',),
-   su_pass          = ('ansible_su_password',),
+   su_pass          = ('ansible_su_password', 'ansible_su_pass'),
    su_exe           = ('ansible_su_exe',),
    su_flags         = ('ansible_su_flags',),
 )
@@ -167,15 +167,18 @@ class ConnectionInformation:
         # backwards compat
         self.sudo_exe    = None
         self.sudo_flags  = None
+        self.sudo_pass   = None
         self.su_exe      = None
         self.su_flags    = None
+        self.su_pass     = None
 
         # general flags (should we move out?)
-        self.verbosity   = 0
-        self.only_tags   = set()
-        self.skip_tags   = set()
-        self.no_log      = False
-        self.check_mode  = False
+        self.verbosity      = 0
+        self.only_tags      = set()
+        self.skip_tags      = set()
+        self.no_log         = False
+        self.check_mode     = False
+        self.force_handlers = False
 
         #TODO: just pull options setup to above?
         # set options before play to allow play to override them
@@ -195,21 +198,23 @@ class ConnectionInformation:
             self.connection = play.connection
 
         if play.remote_user:
-            self.remote_user   = play.remote_user
+            self.remote_user = play.remote_user
 
         if play.port:
-            self.port          = int(play.port)
+            self.port = int(play.port)
 
         if play.become is not None:
-            self.become        = play.become
+            self.become = play.become
         if play.become_method:
             self.become_method = play.become_method
         if play.become_user:
-            self.become_user   = play.become_user
+            self.become_user = play.become_user
 
         # non connection related
-        self.no_log      = play.no_log
-        self.environment = play.environment
+        self.no_log         = play.no_log
+        self.environment    = play.environment
+        if play.force_handlers is not None:
+            self.force_handlers = play.force_handlers
 
     def set_options(self, options):
         '''
@@ -236,6 +241,8 @@ class ConnectionInformation:
         #    self.no_log     = boolean(options.no_log)
         if options.check:
             self.check_mode = boolean(options.check)
+        if hasattr(options, 'force_handlers') and options.force_handlers:
+            self.force_handlers = boolean(options.force_handlers)
 
         # get the tag info from options, converting a comma-separated list
         # of values into a proper list if need be. We check to see if the
@@ -297,6 +304,13 @@ class ConnectionInformation:
                 if variable_name in variables:
                     setattr(new_info, attr, variables[variable_name])
 
+        # become legacy updates
+        if not new_info.become_pass:
+            if new_info.become_method == 'sudo' and new_info.sudo_pass:
+               setattr(new_info, 'become_pass', new_info.sudo_pass)
+            elif new_info.become_method == 'su' and new_info.su_pass:
+               setattr(new_info, 'become_pass', new_info.su_pass)
+
         return new_info
 
     def make_become_cmd(self, cmd, executable=None):
@@ -345,7 +359,7 @@ class ConnectionInformation:
                 prompt='assword:'
                 exe = self.become_exe or 'pbrun'
                 flags = self.become_flags or ''
-                becomecmd = '%s -b -l %s -u %s %s' % (exe, flags, self.become_user, success_cmd)
+                becomecmd = '%s -b %s -u %s %s' % (exe, flags, self.become_user, success_cmd)
 
             elif self.become_method == 'pfexec':
 

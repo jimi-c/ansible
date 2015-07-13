@@ -130,14 +130,8 @@ class StrategyModule(StrategyBase):
 
             try:
                 debug("getting the remaining hosts for this loop")
-                self._tqm._failed_hosts = iterator.get_failed_hosts()
-                hosts_left = self.get_hosts_remaining(iterator._play)
+                hosts_left = self._inventory.get_hosts(iterator._play.hosts)
                 debug("done getting the remaining hosts for this loop")
-                if len(hosts_left) == 0:
-                    debug("out of hosts to run on")
-                    self._tqm.send_callback('v2_playbook_on_no_hosts_remaining')
-                    result = False
-                    break
 
                 # queue up this task for each host in the inventory
                 callback_sent = False
@@ -145,6 +139,7 @@ class StrategyModule(StrategyBase):
 
                 host_results = []
                 host_tasks = self._get_next_task_lockstep(hosts_left, iterator)
+
                 for (host, task) in host_tasks:
                     if not task:
                         continue
@@ -212,8 +207,14 @@ class StrategyModule(StrategyBase):
                 results = self._wait_on_pending_results(iterator)
                 host_results.extend(results)
 
+                if not work_to_do and len(iterator.get_failed_hosts()) > 0:
+                    debug("out of hosts to run on")
+                    self._tqm.send_callback('v2_playbook_on_no_hosts_remaining')
+                    result = False
+                    break
+
                 try:
-                    included_files = IncludedFile.process_include_results(host_results, self._tqm, iterator=iterator, loader=self._loader)
+                    included_files = IncludedFile.process_include_results(host_results, self._tqm, iterator=iterator, loader=self._loader, variable_manager=self._variable_manager)
                 except AnsibleError, e:
                     return False
 

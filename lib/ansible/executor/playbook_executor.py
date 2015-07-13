@@ -25,6 +25,7 @@ from ansible import constants as C
 from ansible.errors import *
 from ansible.executor.task_queue_manager import TaskQueueManager
 from ansible.playbook import Playbook
+from ansible.plugins import module_loader
 from ansible.template import Templar
 
 from ansible.utils.color import colorize, hostcolor
@@ -45,6 +46,12 @@ class PlaybookExecutor:
         self._display          = display
         self._options          = options
         self.passwords         = passwords
+
+        # make sure the module path (if specified) is parsed and
+        # added to the module_loader object
+        if options.module_path is not None:
+            for path in options.module_path.split(os.pathsep):
+                module_loader.add_directory(path)
 
         if options.listhosts or options.listtasks or options.listtags or options.syntax:
             self._tqm = None
@@ -76,6 +83,7 @@ class PlaybookExecutor:
                 self._display.vv('%d plays in %s' % (len(plays), playbook_path))
 
                 for play in plays:
+                    # clear any filters which may have been applied to the inventory
                     self._inventory.remove_restriction()
 
                     # Create a temporary copy of the play here, so we can run post_validate
@@ -115,6 +123,9 @@ class PlaybookExecutor:
                         entry['plays'].append(p)
 
                     else:
+                        # make sure the tqm has callbacks loaded
+                        self._tqm.load_callbacks()
+
                         # we are actually running plays
                         for batch in self._get_serialized_batches(new_play):
                             if len(batch) == 0:

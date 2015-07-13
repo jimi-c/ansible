@@ -106,9 +106,7 @@ Variables can also be applied to an entire group at once::
 Groups of Groups, and Group Variables
 +++++++++++++++++++++++++++++++++++++
 
-It is also possible to make groups of groups and assign
-variables to groups.  These variables can be used by /usr/bin/ansible-playbook, but not
-/usr/bin/ansible::
+It is also possible to make groups of groups using the ``:children`` suffix. Just like above, you can apply variables using ``:vars``.
 
    [atlanta]
    host1
@@ -242,7 +240,7 @@ Examples from a host file::
    :doc:`intro_adhoc`
        Examples of basic commands
    :doc:`playbooks`
-       Learning ansible's configuration management language
+       Learning Ansible’s configuration, deployment, and orchestration language.
    `Mailing List <http://groups.google.com/group/ansible-project>`_
        Questions? Help? Ideas?  Stop by the list on Google Groups
    `irc.freenode.net <http://irc.freenode.net>`_

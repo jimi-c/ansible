@@ -1,4 +1,5 @@
-# (C) 2012, Michael DeHaan, <michael.dehaan@gmail.com>
+# test code for the template module
+# (c) 2015, Brian Coca <bcoca@ansible.com>
 
 # This file is part of Ansible
 #
@@ -15,17 +16,22 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
-import time
-import json
+- name: veryfiy ansible_managed
+  template: src=foo.j2 dest={{output_dir}}/special_vars.yaml
 
-class CallbackModule(object):
-    """
-    This is a very trivial example of how any callback function can get at play and task objects.
-    play will be 'None' for runner invocations, and task will be None for 'setup' invocations.
-    """
+- name: read the file into facts
+  include_vars: "{{output_dir}}/special_vars.yaml"
 
-    def on_any(self, *args, **kwargs):
-        play = getattr(self, 'play', None)
-        task = getattr(self, 'task', None)
-        print "play = %s, task = %s, args = %s, kwargs = %s" % (play,task,args,kwargs)
+
+- name: veriy all test vars are defined
+  assert:
+    that:
+        - 'item in hostvars[inventory_hostname].keys()'
+  with_items:
+    - test_template_host
+    - test_template_path
+    - test_template_mtime
+    - test_template_uid
+    - test_template_fullpath
+    - test_template_run_date
+    - test_ansible_managed

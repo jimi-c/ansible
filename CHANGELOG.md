@@ -4,6 +4,17 @@ Ansible Changes By Release
 ## 2.0 "TBD" - ACTIVE DEVELOPMENT
 
 Major Changes:
+ * Introducing the new block/rescue/always directives, allow for making task blocks and introducing exception like semantics
+ * New stratergy plugins, allow to control the flow of execution of tasks per play, the default will be the same as before
+ * Improved error handling, now you get much more detailed parser messages. General exception handling and display has been revamped.
+ * Task includes now get evaluated during execution, end behaviour will be the same but it now allows for more dynamic includes and options.
+ * First feature of the more dynamic includes is that with_ loops are now usable with them.
+ * callback, connection and lookup plugin APIs have changed, some will require modification to work with new version
+ * callbacks are now shipped in the active directory and don't need to be copied, just whitelisted in ansible.cfg
+ * Many API changes, this will break those currently using it directly, but the new API is much easier to use and test
+ * Settings are now more inheritable, what you set at play, block or role will be automatically inhertited by the contained,
+   this allows for new feautures to automatically be settable at all levels, previouslly we had to manually code this
+ * Many more tests, new API makes things more testable and we took advantage of it
  * big_ip modules now support turning off ssl certificate validation (use only for self signed)
  * template code now retains types for bools and Numbers instead of turning them into strings
    If you need the old behaviour, quote the value and it will get passed around as a string
@@ -13,16 +24,20 @@ Deprecated Modules (new ones in parens):
   * quantum_network (os_network)
   * glance_image
   * nova_compute   (os_server)
+  * quantum_floating_ip (os_floating_ip)
 
 New Modules:
   * amazon: ec2_ami_copy
   * amazon: ec2_ami_find
   * amazon: ec2_eni
   * amazon: ec2_eni_facts
-  * amazon: elasticache_subnet_group
+  * amazon: ec2_vpc_net
   * amazon: ec2_win_password
+  * amazon: elasticache_subnet_group
   * amazon: iam
   * amazon: iam_policy
+  * amazon: route53_zone
+  * bundler
   * circonus_annotation
   * consul
   * consul_acl
@@ -53,10 +68,12 @@ New Modules:
   * openstack: os_ironic
   * openstack: os_ironic_node
   * openstack: os_client_config
+  * openstack: os_floating_ip
   * openstack: os_image
   * openstack: os_network
   * openstack: os_object
   * openstack: os_security_group
+  * openstack: os_security_group_rule
   * openstack: os_server
   * openstack: os_server_actions
   * openstack: os_server_facts
@@ -66,10 +83,15 @@ New Modules:
   * osx_defaults
   * pear
   * proxmox
-  * proxmox_template
-  * puppet
+  * proxmox_template 
+  * puppet 
   * pushover
   * pushbullet
+  * rax: rax_mon_alarm
+  * rax: rax_mon_check
+  * rax: rax_mon_entity
+  * rax: rax_mon_notification
+  * rax: rax_mon_notification_plan
   * rabbitmq_binding
   * rabbitmq_exchange
   * rabbitmq_queue
@@ -88,6 +110,13 @@ New Modules:
   * webfaction_mailbox
   * webfaction_site
   * win_environment
+  * win_scheduled_task
+  * win_iis_virtualdirectory
+  * win_iis_webapplication
+  * win_iis_webapppool
+  * win_iis_webbinding
+  * win_iis_website
+  * win_regedit
   * zabbix_host
   * zabbix_hostmacro
   * zabbix_screen
@@ -98,6 +127,34 @@ New Inventory scripts:
   * serf
 
 Other Notable Changes:
+
+## 1.9.2 "Dancing In the Street" - Jun 26, 2015
+
+* Security fixes to check that hostnames match certificates with https urls (CVE-2015-3908)
+  - get_url and uri modules
+  - url and etcd lookup plugins
+* Security fixes to the zone (Solaris containers), jail (bsd containers),
+  and chroot connection plugins.  These plugins can be used to connect to
+  their respective container types in leiu of the standard ssh connection.
+  Prior to this fix being applied these connection plugins didn't properly
+  handle symlinks within the containers which could lead to files intended to
+  be written to or read from the container being written to or read from the
+  host system instead. (CVE pending)
+* Fixed a bug in the service module where init scripts were being incorrectly used instead of upstart/systemd.
+* Fixed a bug where sudo/su settings were not inherited from ansible.cfg correctly.
+* Fixed a bug in the rds module where a traceback may occur due to an unbound variable.
+* Fixed a bug where certain remote file systems where the SELinux context was not being properly set.
+* Re-enabled several windows modules which had been partially merged (via action plugins):
+  - win_copy.ps1
+  - win_copy.py
+  - win_file.ps1
+  - win_file.py
+  - win_template.py
+* Fix bug using with_sequence and a count that is zero.  Also allows counting backwards isntead of forwards
+* Fix get_url module bug preventing use of custom ports with https urls
+* Fix bug disabling repositories in the yum module.
+* Fix giving yum module a url to install a package from on RHEL/CENTOS5
+* Fix bug in dnf module preventing it from working when yum-utils was not already installed
 
 ## 1.9.1 "Dancing In the Street" - Apr 27, 2015
 
@@ -133,7 +190,7 @@ Major changes:
 * Added travis integration to github for basic tests, this should speed up ticket triage and merging.
 * environment: directive now can also be applied to play and is inhertited by tasks, which can still override it.
 * expanded facts and OS/distribution support for existing facts and improved performance with pypy.
-* new 'wantlist' option to lookups allows for selecting a list typed variable vs a command delimited string as the return.
+* new 'wantlist' option to lookups allows for selecting a list typed variable vs a comma delimited string as the return.
 * the shared module code for file backups now uses a timestamp resolution of seconds (previouslly minutes).
 * allow for empty inventories, this is now a warning and not an error (for those using localhost and cloud modules).
 * sped up YAML parsing in ansible by up to 25% by switching to CParser loader.

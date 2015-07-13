@@ -25,7 +25,6 @@ from ansible.errors import AnsibleError, AnsibleOptionsError
 from ansible.parsing.vault import VaultEditor
 from ansible.cli import CLI
 from ansible.utils.display import Display
-from ansible.utils.vault import read_vault_file
 
 class VaultCLI(CLI):
     """ Vault command line class """
@@ -70,11 +69,16 @@ class VaultCLI(CLI):
 
     def run(self):
 
+        super(VaultCLI, self).run()
+
         if self.options.vault_password_file:
             # read vault_pass from a file
-            self.vault_pass = read_vault_file(self.options.vault_password_file)
+            self.vault_pass = CLI.read_vault_password_file(self.options.vault_password_file)
         elif self.options.ask_vault_pass:
             self.vault_pass, _= self.ask_vault_passwords(ask_vault_pass=True, ask_new_vault_pass=False, confirm_new=False)
+
+        if not self.vault_pass:
+            raise AnsibleOptionsError("A password is required to use Ansible's Vault")
 
         self.execute()
 

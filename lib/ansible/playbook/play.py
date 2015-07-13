@@ -19,6 +19,8 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+from six import string_types
+
 from ansible.errors import AnsibleError, AnsibleParserError
 
 from ansible.playbook.attribute import Attribute, FieldAttribute
@@ -57,7 +59,7 @@ class Play(Base, Taggable, Become):
 
     # Connection
     _gather_facts        = FieldAttribute(isa='string', default='smart')
-    _hosts               = FieldAttribute(isa='list', default=[], required=True)
+    _hosts               = FieldAttribute(isa='list', default=[], required=True, listof=string_types)
     _name                = FieldAttribute(isa='string', default='')
 
     # Variable Attributes
@@ -76,6 +78,7 @@ class Play(Base, Taggable, Become):
 
     # Flag/Setting Attributes
     _any_errors_fatal    = FieldAttribute(isa='bool', default=False)
+    _force_handlers      = FieldAttribute(isa='bool')
     _max_fail_percentage = FieldAttribute(isa='string', default='0')
     _serial              = FieldAttribute(isa='int', default=0)
     _strategy            = FieldAttribute(isa='string', default='linear')
@@ -84,6 +87,8 @@ class Play(Base, Taggable, Become):
 
     def __init__(self):
         super(Play, self).__init__()
+
+        self.ROLE_CACHE = {}
 
     def __repr__(self):
         return self.get_name()
@@ -121,6 +126,28 @@ class Play(Base, Taggable, Become):
 
         return super(Play, self).preprocess_data(ds)
 
+    def _load_hosts(self, attr, ds):
+        '''
+        Loads the hosts from the given datastructure, which might be a list
+        or a simple string. We also switch integers in this list back to strings,
+        as the YAML parser will turn things that look like numbers into numbers.
+        '''
+
+        if isinstance(ds, (string_types, int)):
+            ds = [ ds ]
+
+        if not isinstance(ds, list):
+            raise AnsibleParserError("'hosts' must be specified as a list or a single pattern", obj=ds)
+
+        # YAML parsing of things that look like numbers may have
+        # resulted in integers showing up in the list, so convert
+        # them back to strings to prevent problems
+        for idx,item in enumerate(ds):
+            if isinstance(item, int):
+                ds[idx] = "%s" % item
+
+        return ds
+
     def _load_vars(self, attr, ds):
         '''
         Vars in a play can be specified either as a dictionary directly, or
@@ -138,6 +165,8 @@ class Play(Base, Taggable, Become):
                         raise ValueError
                     all_vars = combine_vars(all_vars, item)
                 return all_vars
+            elif ds is None:
+                return {}
             else:
                 raise ValueError
         except ValueError:
@@ -184,7 +213,7 @@ class Play(Base, Taggable, Become):
 
         roles = []
         for ri in role_includes:
-            roles.append(Role.load(ri))
+            roles.append(Role.load(ri, play=self))
         return roles
 
     def _post_validate_vars(self, attr, value, templar):
@@ -294,4 +323,9 @@ class Play(Base, Taggable, Become):
 
             setattr(self, 'roles', roles)
             del data['roles']
+
+    def copy(self):
+        new_me = super(Play, self).copy()
+        new_me.ROLE_CACHE = self.ROLE_CACHE.copy()
+        return new_me
 

@@ -28,8 +28,9 @@ from ansible.inventory.host import Host
 from ansible.inventory.group import Group
 from ansible.playbook.handler import Handler
 from ansible.playbook.helpers import load_list_of_blocks
-from ansible.playbook.role import ROLE_CACHE, hash_params
-from ansible.plugins import filter_loader, lookup_loader, module_loader
+from ansible.playbook.role import hash_params
+from ansible.plugins import _basedirs, filter_loader, lookup_loader, module_loader
+from ansible.template import Templar
 from ansible.utils.debug import debug
 
 
@@ -44,6 +45,7 @@ class SharedPluginLoaderObj:
     the forked processes over the queue easier
     '''
     def __init__(self):
+        self.basedirs      = _basedirs[:]
         self.filter_loader = filter_loader
         self.lookup_loader = lookup_loader
         self.module_loader = module_loader
@@ -168,7 +170,7 @@ class StrategyBase:
                             self._tqm._stats.increment('failures', host.name)
                         else:
                             self._tqm._stats.increment('ok', host.name)
-                        self._tqm.send_callback('v2_runner_on_failed', task_result)
+                        self._tqm.send_callback('v2_runner_on_failed', task_result, ignore_errors=task.ignore_errors)
                     elif result[0] == 'host_unreachable':
                         self._tqm._unreachable_hosts[host.name] = True
                         self._tqm._stats.increment('dark', host.name)
@@ -191,9 +193,9 @@ class StrategyBase:
                     if task_result._task._role is not None and result[0] in ('host_task_ok', 'host_task_failed'):
                         # lookup the role in the ROLE_CACHE to make sure we're dealing
                         # with the correct object and mark it as executed
-                        for (entry, role_obj) in ROLE_CACHE[task_result._task._role._role_name].iteritems():
+                        for (entry, role_obj) in iterator._play.ROLE_CACHE[task_result._task._role._role_name].iteritems():
                             hashed_entry = hash_params(task_result._task._role._role_params)
-                            if entry == hashed_entry :
+                            if entry == hashed_entry:
                                 role_obj._had_task_run = True
 
                     ret_results.append(task_result)
@@ -205,11 +207,8 @@ class StrategyBase:
                     self._add_host(new_host_info)
 
                 elif result[0] == 'add_group':
-                    host        = result[1]
-                    task_result = result[2]
-                    group_name  = task_result.get('add_group')
-
-                    self._add_group(host, group_name)
+                    task        = result[1]
+                    self._add_group(task, iterator)
 
                 elif result[0] == 'notify_handler':
                     host         = result[1]
@@ -221,16 +220,39 @@ class StrategyBase:
                     if host not in self._notified_handlers[handler_name]:
                         self._notified_handlers[handler_name].append(host)
 
-                elif result[0] == 'set_host_var':
+                elif result[0] == 'register_host_var':
+                    # essentially the same as 'set_host_var' below, however we
+                    # never follow the delegate_to value for registered vars
                     host      = result[1]
                     var_name  = result[2]
                     var_value = result[3]
                     self._variable_manager.set_host_variable(host, var_name, var_value)
 
-                elif result[0] == 'set_host_facts':
-                    host  = result[1]
-                    facts = result[2]
-                    self._variable_manager.set_host_facts(host, facts)
+                elif result[0] in ('set_host_var', 'set_host_facts'):
+                    host = result[1]
+                    task = result[2]
+                    item = result[3]
+
+                    if task.delegate_to is not None:
+                        task_vars = self._variable_manager.get_vars(loader=self._loader, play=iterator._play, host=host, task=task)
+                        task_vars = self.add_tqm_variables(task_vars, play=iterator._play)
+                        if item is not None:
+                            task_vars['item'] = item
+                        templar = Templar(loader=self._loader, variables=task_vars)
+                        host_name = templar.template(task.delegate_to)
+                        target_host = self._inventory.get_host(host_name)
+                        if target_host is None:
+                            target_host = Host(name=host_name)
+                    else:
+                        target_host = host
+
+                    if result[0] == 'set_host_var':
+                        var_name  = result[4]
+                        var_value = result[5]
+                        self._variable_manager.set_host_variable(target_host, var_name, var_value)
+                    elif result[0] == 'set_host_facts':
+                        facts = result[4]
+                        self._variable_manager.set_host_facts(target_host, facts)
 
                 else:
                     raise AnsibleError("unknown result message received: %s" % result[0])
@@ -247,11 +269,12 @@ class StrategyBase:
 
         ret_results = []
 
+        debug("waiting for pending results...")
         while self._pending_results > 0 and not self._tqm._terminated:
-            debug("waiting for pending results (%d left)" % self._pending_results)
             results = self._process_pending_results(iterator)
             ret_results.extend(results)
             time.sleep(0.01)
+        debug("no more pending results, returning what we have")
 
         return ret_results
 
@@ -266,7 +289,7 @@ class StrategyBase:
         if host_name in self._inventory._hosts_cache:
             new_host = self._inventory._hosts_cache[host_name]
         else:
-            new_host = Host(host_name)
+            new_host = Host(name=host_name)
             self._inventory._hosts_cache[host_name] = new_host
 
             allgroup = self._inventory.get_group('all')
@@ -299,29 +322,45 @@ class StrategyBase:
         # FIXME: is this still required?
         self._inventory.clear_pattern_cache()
 
-    def _add_group(self, host, group_name):
+    def _add_group(self, task, iterator):
         '''
         Helper function to add a group (if it does not exist), and to assign the
         specified host to that group.
         '''
 
-        new_group = self._inventory.get_group(group_name)
-        if not new_group:
-            # create the new group and add it to inventory
-            new_group = Group(group_name)
-            self._inventory.add_group(new_group)
-
-            # and add the group to the proper hierarchy
-            allgroup = self._inventory.get_group('all')
-            allgroup.add_child_group(new_group)
-
         # the host here is from the executor side, which means it was a
         # serialized/cloned copy and we'll need to look up the proper
         # host object from the master inventory
-        actual_host = self._inventory.get_host(host.name)
+        groups = {}
+        changed = False
 
-        # and add the host to the group
-        new_group.add_host(actual_host)
+        for host in self._inventory.get_hosts():
+            original_task = iterator.get_original_task(host, task)
+            all_vars = self._variable_manager.get_vars(loader=self._loader, play=iterator._play, host=host, task=original_task)
+            templar = Templar(loader=self._loader, variables=all_vars)
+            group_name = templar.template(original_task.args.get('key'))
+            if task.evaluate_conditional(templar=templar, all_vars=all_vars):
+                if group_name not in groups:
+                    groups[group_name] = []
+                groups[group_name].append(host)
+
+        for group_name, hosts in groups.iteritems():
+            new_group = self._inventory.get_group(group_name)
+            if not new_group:
+                # create the new group and add it to inventory
+                new_group = Group(name=group_name)
+                self._inventory.add_group(new_group)
+
+                # and add the group to the proper hierarchy
+                allgroup = self._inventory.get_group('all')
+                allgroup.add_child_group(new_group)
+                changed = True
+            for host in hosts:
+                if group_name not in host.get_groups():
+                    new_group.add_host(host)
+                    changed = True
+
+        return changed
 
     def _load_included_file(self, included_file, iterator):
         '''
@@ -373,13 +412,14 @@ class StrategyBase:
             for handler in handler_block.block:
                 handler_name = handler.get_name()
                 if handler_name in self._notified_handlers and len(self._notified_handlers[handler_name]):
-                    if not len(self.get_hosts_remaining(iterator._play)):
-                        self._tqm.send_callback('v2_playbook_on_no_hosts_remaining')
-                        result = False
-                        break
+                    # FIXME: need to use iterator.get_failed_hosts() instead?
+                    #if not len(self.get_hosts_remaining(iterator._play)):
+                    #    self._tqm.send_callback('v2_playbook_on_no_hosts_remaining')
+                    #    result = False
+                    #    break
                     self._tqm.send_callback('v2_playbook_on_handler_task_start', handler)
                     for host in self._notified_handlers[handler_name]:
-                        if not handler.has_triggered(host):
+                        if not handler.has_triggered(host) and (host.name not in self._tqm._failed_hosts or connection_info.force_handlers):
                             task_vars = self._variable_manager.get_vars(loader=self._loader, play=iterator._play, host=host, task=handler)
                             task_vars = self.add_tqm_variables(task_vars, play=iterator._play)
                             self._queue_task(host, handler, task_vars, connection_info)

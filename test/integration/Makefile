@@ -38,7 +38,7 @@ includes:
 unicode:
 	ansible-playbook unicode.yml -i $(INVENTORY) -e @$(VARS_FILE) -v $(TEST_FLAGS) -e 'extra_var=café'
 	# Test the start-at-task flag #9571
-	ansible-playbook unicode.yml -i $(INVENTORY) -e @$(VARS_FILE) -v --start-at-task '*¶' -e 'start_at_task=True' $(TEST_FLAGS)
+	#ansible-playbook unicode.yml -i $(INVENTORY) -e @$(VARS_FILE) -v --start-at-task '*¶' -e 'start_at_task=True' $(TEST_FLAGS)
 
 test_templating_settings:
 	ansible-playbook test_templating_settings.yml -i $(INVENTORY) -e @$(VARS_FILE) $(CREDENTIALS_ARG) -v $(TEST_FLAGS)
@@ -164,7 +164,7 @@ $(CONSUL_RUNNING):
 consul:
 ifeq ($(CONSUL_RUNNING), True)
 	ansible-playbook -i $(INVENTORY) consul.yml ; \
-	ansible-playbook -i ../../plugins/inventory/consul_io.py consul_inventory.yml
+	ansible-playbook -i ../../contrib/inventory/consul_io.py consul_inventory.yml
 else
 	@echo "Consul agent is not running locally. To run a cluster locally see http://github.com/sgargan/consul-vagrant"
 endif

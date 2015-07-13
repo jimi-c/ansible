@@ -10,8 +10,9 @@ addons:
     packages:
       - python2.4
 install:
-  - pip install tox
+  - pip install tox PyYAML Jinja2 sphinx
 script:
   - tox
+  #- make -C docsite all
 after_success:
   - coveralls

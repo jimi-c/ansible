@@ -179,15 +179,21 @@ class TaskExecutor:
         Squash items down to a comma-separated list for certain modules which support it
         (typically package management modules).
         '''
-
         if len(items) > 0 and self._task.action in self.SQUASH_ACTIONS:
             final_items = []
+            name = self._task.args.pop('name', None) or self._task.args.pop('pkg', None)
             for item in items:
                 variables['item'] = item
                 templar = Templar(loader=self._loader, shared_loader_obj=self._shared_loader_obj, variables=variables)
                 if self._task.evaluate_conditional(templar, variables):
-                    final_items.append(item)
-            return [",".join(final_items)]
+                    if templar._contains_vars(name):
+                        new_item = templar.template(name)
+                        final_items.append(new_item)
+                    else:
+                        final_items.append(item)
+            joined_items = ",".join(final_items)
+            self._task.args['name'] = joined_items
+            return [joined_items]
         else:
             return items
 
@@ -211,12 +217,6 @@ class TaskExecutor:
         # variables to the variable dictionary
         self._connection_info.update_vars(variables)
 
-        # get the connection and the handler for this execution
-        self._connection = self._get_connection(variables)
-        self._connection.set_host_overrides(host=self._host)
-
-        self._handler = self._get_action_handler(connection=self._connection, templar=templar)
-
         # Evaluate the conditional (if any) for this task, which we do before running
         # the final task post-validation. We do this before the post validation due to
         # the fact that the conditional may specify that the task be skipped due to a
@@ -225,8 +225,17 @@ class TaskExecutor:
             debug("when evaulation failed, skipping this task")
             return dict(changed=False, skipped=True, skip_reason='Conditional check failed')
 
-        # Now we do final validation on the task, which sets all fields to their final values
+        # Now we do final validation on the task, which sets all fields to their final values.
+        # In the case of debug tasks, we save any 'var' params and restore them after validating
+        # so that variables are not replaced too early.
+        prev_var = None
+        if self._task.action == 'debug' and 'var' in self._task.args:
+            prev_var = self._task.args.pop('var')
+
         self._task.post_validate(templar=templar)
+
+        if prev_var is not None:
+            self._task.args['var'] = prev_var
 
         # if this task is a TaskInclude, we just return now with a success code so the
         # main thread can expand the task list for the given host
@@ -235,6 +244,12 @@ class TaskExecutor:
             include_file = include_variables.get('_raw_params')
             del include_variables['_raw_params']
             return dict(changed=True, include=include_file, include_variables=include_variables)
+
+        # get the connection and the handler for this execution
+        self._connection = self._get_connection(variables)
+        self._connection.set_host_overrides(host=self._host)
+
+        self._handler = self._get_action_handler(connection=self._connection, templar=templar)
 
         # And filter out any fields which were set to default(omit), and got the omit token value
         omit_token = variables.get('omit')
@@ -259,7 +274,7 @@ class TaskExecutor:
         for attempt in range(retries):
             if attempt > 0:
                 # FIXME: this should use the callback/message passing mechanism
-                print("FAILED - RETRYING: %s (%d retries left)" % (self._task, retries-attempt))
+                print("FAILED - RETRYING: %s (%d retries left). Result was: %s" % (self._task, retries-attempt, result))
                 result['attempts'] = attempt + 1
 
             debug("running the handler")
@@ -445,7 +460,7 @@ class TaskExecutor:
         self._connection_info.port             = this_info.get('ansible_ssh_port', self._connection_info.port)
         self._connection_info.password         = this_info.get('ansible_ssh_pass', self._connection_info.password)
         self._connection_info.private_key_file = this_info.get('ansible_ssh_private_key_file', self._connection_info.private_key_file)
-        self._connection_info.connection       = this_info.get('ansible_connection', self._connection_info.connection)
+        self._connection_info.connection       = this_info.get('ansible_connection', C.DEFAULT_TRANSPORT)
         self._connection_info.become_pass      = this_info.get('ansible_sudo_pass', self._connection_info.become_pass)
 
         if self._connection_info.remote_addr in ('127.0.0.1', 'localhost'):

@@ -19,6 +19,7 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import ast
 import re
 
 from jinja2 import Environment
@@ -29,7 +30,7 @@ from jinja2.runtime import StrictUndefined
 
 from ansible import constants as C
 from ansible.errors import AnsibleError, AnsibleFilterError, AnsibleUndefinedVariable
-from ansible.plugins import filter_loader, lookup_loader
+from ansible.plugins import _basedirs, filter_loader, lookup_loader
 from ansible.template.safe_eval import safe_eval
 from ansible.template.template import AnsibleJ2Template
 from ansible.template.vars import AnsibleJ2Vars
@@ -60,6 +61,8 @@ class Templar:
         self._available_variables = variables
 
         if shared_loader_obj:
+            global _basedirs
+            _basedirs = shared_loader_obj.basedirs[:]
             self._filter_loader = getattr(shared_loader_obj, 'filter_loader')
             self._lookup_loader = getattr(shared_loader_obj, 'lookup_loader')
         else:
@@ -253,6 +256,17 @@ class Templar:
             else:
                 overrides = JINJA2_ALLOWED_OVERRIDES.intersection(set(overrides))
                 myenv = self.environment.overlay(overrides)
+
+            # Get jinja env overrides from template
+            if data.startswith(JINJA2_OVERRIDE):
+                eol = data.find('\n')
+                line = data[len(JINJA2_OVERRIDE):eol]
+                data = data[eol+1:]
+                for pair in line.split(','):
+                    (key,val) = pair.split(':')
+                    key = key.strip()
+                    if key in JINJA2_ALLOWED_OVERRIDES:
+                        setattr(myenv, key, ast.literal_eval(val.strip()))
 
             #FIXME: add tests
             myenv.filters.update(self._get_filters())

@@ -18,10 +18,14 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import base64
+import datetime
 import os
+import time
 
+from ansible import constants as C
 from ansible.plugins.action import ActionBase
 from ansible.utils.hashing import checksum_s
+from ansible.utils.unicode import to_bytes
 
 class ActionModule(ActionBase):
 
@@ -51,7 +55,7 @@ class ActionModule(ActionBase):
 
         source = self._task.args.get('src', None)
         dest   = self._task.args.get('dest', None)
-        faf     = task_vars.get('first_available_file', None)
+        faf    = self._task.first_available_file
 
         if (source is None and faf is not None) or dest is None:
             return dict(failed=True, msg="src and dest are required")
@@ -97,7 +101,35 @@ class ActionModule(ActionBase):
         try:
             with open(source, 'r') as f:
                 template_data = f.read()
+
+            try:
+                template_uid = pwd.getpwuid(os.stat(source).st_uid).pw_name
+            except:
+                template_uid = os.stat(source).st_uid
+
+            vars = task_vars.copy()
+            vars['template_host']     = os.uname()[1]
+            vars['template_path']     = source
+            vars['template_mtime']    = datetime.datetime.fromtimestamp(os.path.getmtime(source))
+            vars['template_uid']      = template_uid
+            vars['template_fullpath'] = os.path.abspath(source)
+            vars['template_run_date'] = datetime.datetime.now()
+
+            managed_default = C.DEFAULT_MANAGED_STR
+            managed_str = managed_default.format(
+                host = vars['template_host'],
+                uid  = vars['template_uid'],
+                file = to_bytes(vars['template_path'])
+            )
+            vars['ansible_managed'] = time.strftime(
+                managed_str,
+                time.localtime(os.path.getmtime(source))
+            )
+
+            old_vars = self._templar._available_variables
+            self._templar.set_available_variables(vars)
             resultant = self._templar.template(template_data, preserve_trailing_newlines=True)
+            self._templar.set_available_variables(old_vars)
         except Exception as e:
             return dict(failed=True, msg=type(e).__name__ + ": " + str(e))
 
@@ -121,8 +153,8 @@ class ActionModule(ActionBase):
             #            dest_contents = base64.b64decode(dest_contents)
             #        else:
             #            raise Exception("unknown encoding, failed: %s" % dest_result.result)
- 
-            xfered = self._transfer_data(self._shell.join_path(tmp, 'source'), resultant)
+
+            xfered = self._transfer_data(self._connection._shell.join_path(tmp, 'source'), resultant)
 
             # fix file permissions when the copy is done as a different user
             if self._connection_info.become and self._connection_info.become_user != 'root':
@@ -138,15 +170,6 @@ class ActionModule(ActionBase):
                    follow=True,
                 ),
             )
-
-            # FIXME: noop stuff needs to be sorted out
-            #if self.runner.noop_on_check(task_vars):
-            #    return ReturnData(conn=conn, comm_ok=True, result=dict(changed=True), diff=dict(before_header=dest, after_header=source, before=dest_contents, after=resultant))
-            #else:
-            #    res = self.runner._execute_module(conn, tmp, 'copy', module_args_tmp, task_vars=task_vars, complex_args=complex_args)
-            #    if res.result.get('changed', False):
-            #        res.diff = dict(before=dest_contents, after=resultant)
-            #    return res
 
             result = self._execute_module(module_name='copy', module_args=new_module_args, task_vars=task_vars)
             if result.get('changed', False):
@@ -168,13 +191,6 @@ class ActionModule(ActionBase):
                     follow=True,
                 ),
             )
-
-            # FIXME: this may not be required anymore, as the checkmod params
-            #        should be in the regular module args?
-            # be sure to task_vars the check mode param into the module args and
-            # rely on the file module to report its changed status
-            #if self.runner.noop_on_check(task_vars):
-            #    new_module_args['CHECKMODE'] = True
 
             return self._execute_module(module_name='file', module_args=new_module_args, task_vars=task_vars)
 

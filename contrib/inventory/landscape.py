@@ -17,72 +17,99 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible. If not, see <http://www.gnu.org/licenses/>.
 
-# Dynamic inventory script which lets you use nodes discovered by Serf
-# (https://serfdom.io/).
+# Dynamic inventory script which lets you use nodes discovered by Canonical's
+# Landscape (http://www.ubuntu.com/management/landscape-features).
 #
-# Requires the `serfclient` Python module from
-# https://pypi.python.org/pypi/serfclient
+# Requires the `landscape_api` Python module
+# See:
+#   - https://landscape.canonical.com/static/doc/api/api-client-package.html
+#   - https://landscape.canonical.com/static/doc/api/python-api.html
 #
 # Environment variables
 # ---------------------
-#   - `SERF_RPC_ADDR`
-#   - `SERF_RPC_AUTH`
-#
-# These variables are described at https://www.serfdom.io/docs/commands/members.html#_rpc_addr
+#   - `LANDSCAPE_API_URI`
+#   - `LANDSCAPE_API_KEY`
+#   - `LANDSCAPE_API_SECRET`
+#   - `LANDSCAPE_API_SSL_CA_FILE` (optional)
+
 
 import argparse
+import collections
 import os
 import sys
 
-# https://pypi.python.org/pypi/serfclient
-from serfclient import SerfClient, EnvironmentConfig
+from landscape_api.base import API, HTTPError
 
 try:
     import json
 except ImportError:
     import simplejson as json
 
-_key = 'serf'
+_key = 'landscape'
 
 
-def _serf_client():
+class EnvironmentConfig(object):
+    uri = os.getenv('LANDSCAPE_API_URI')
+    access_key = os.getenv('LANDSCAPE_API_KEY')
+    secret_key = os.getenv('LANDSCAPE_API_SECRET')
+    ssl_ca_file = os.getenv('LANDSCAPE_API_SSL_CA_FILE')
+
+
+def _landscape_client():
     env = EnvironmentConfig()
-    return SerfClient(host=env.host, port=env.port, rpc_auth=env.auth_key)
+    return API(
+        uri=env.uri,
+        access_key=env.access_key,
+        secret_key=env.secret_key,
+        ssl_ca_file=env.ssl_ca_file)
 
 
-def get_serf_members_data():
-    return _serf_client().members().body['Members']
+def get_landscape_members_data():
+    return _landscape_client().get_computers()
 
 
 def get_nodes(data):
-    return [node['Name'] for node in data]
+    return [node['hostname'] for node in data]
+
+
+def get_groups(data):
+    groups = collections.defaultdict(list)
+
+    for node in data:
+        for value in node['tags']:
+            groups[value].append(node['hostname'])
+
+    return groups
 
 
 def get_meta(data):
     meta = {'hostvars': {}}
     for node in data:
-        meta['hostvars'][node['Name']] = node['Tags']
+        meta['hostvars'][node['hostname']] = {'tags': node['tags']}
     return meta
 
 
 def print_list():
-    data = get_serf_members_data()
+    data = get_landscape_members_data()
     nodes = get_nodes(data)
+    groups = get_groups(data)
     meta = get_meta(data)
-    print(json.dumps({_key: nodes, '_meta': meta}))
+    inventory_data = {_key: nodes, '_meta': meta}
+    inventory_data.update(groups)
+    print(json.dumps(inventory_data))
 
 
 def print_host(host):
-    data = get_serf_members_data()
+    data = get_landscape_members_data()
     meta = get_meta(data)
     print(json.dumps(meta['hostvars'][host]))
 
 
 def get_args(args_list):
     parser = argparse.ArgumentParser(
-        description='ansible inventory script reading from serf cluster')
+        description='ansible inventory script reading from landscape cluster')
     mutex_group = parser.add_mutually_exclusive_group(required=True)
-    help_list = 'list all hosts from serf cluster'
+    help_list = 'list all hosts from landscape cluster'
     mutex_group.add_argument('--list', action='store_true', help=help_list)
     help_host = 'display variables for a host'
     mutex_group.add_argument('--host', help=help_host)

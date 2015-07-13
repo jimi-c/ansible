@@ -28,7 +28,6 @@ from ansible.errors import AnsibleError, AnsibleOptionsError
 from ansible.cli import CLI
 from ansible.plugins import module_loader
 from ansible.utils.display import Display
-from ansible.utils.vault import read_vault_file
 from ansible.utils.cmd_functions import run_cmd
 
 ########################################################
@@ -97,6 +96,8 @@ class PullCLI(CLI):
 
     def run(self):
         ''' use Runner lib to do SSH things '''
+
+        super(PullCLI, self).run()
 
         # log command line
         now = datetime.datetime.now()

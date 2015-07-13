@@ -18,7 +18,7 @@ The directory "./library", alongside your top level playbooks, is also automatic
 added as a search directory.
 
 Should you develop an interesting Ansible module, consider sending a pull request to the
-`modules-extras project <http://github.com/ansible/ansible-modules-extras>`_.  There's also a core
+`modules-extras project <https://github.com/ansible/ansible-modules-extras>`_.  There's also a core
 repo for more established and widely used modules.  "Extras" modules may be promoted to core periodically,
 but there's no fundamental difference in the end - both ship with ansible, all in one package, regardless
 of how you acquire ansible.
@@ -292,7 +292,7 @@ will evaluate to True when check mode is enabled. For example::
     )
 
     if module.check_mode:
-        # Check if any changes would be made by don't actually make those changes
+        # Check if any changes would be made but don't actually make those changes
         module.exit_json(changed=check_if_system_state_would_be_changed())
 
 Remember that, as module developer, you are responsible for ensuring that no
@@ -484,7 +484,7 @@ Module checklist
 * The return structure should be consistent, even if NA/None are used for keys normally returned under other options.
 * Are module actions idempotent? If not document in the descriptions or the notes
 * Import module snippets `from ansible.module_utils.basic import *` at the bottom, conserves line numbers for debugging.
-* Call your :func:`main` from a condtional so that it would be possible to
+* Call your :func:`main` from a conditional so that it would be possible to
   test them in the future example::
 
     if __name__ == '__main__':
