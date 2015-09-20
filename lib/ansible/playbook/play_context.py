@@ -328,7 +328,7 @@ class PlayContext(Base):
             becomecmd   = None
             randbits    = ''.join(random.choice(string.ascii_lowercase) for x in range(32))
             success_key = 'BECOME-SUCCESS-%s' % randbits
-            success_cmd = pipes.quote('echo %s; %s' % (success_key, cmd))
+            success_cmd = 'echo %s; %s' % (success_key, cmd)
 
             # set executable to use for the privilege escalation method, with various overrides
             exe = self.become_exe or \
@@ -354,9 +354,9 @@ class PlayContext(Base):
                 # force quick error if password is required but not supplied, should prevent sudo hangs.
                 if self.become_pass:
                     prompt = '[sudo via ansible, key=%s] password: ' % randbits
-                    becomecmd = '%s %s -p "%s" -S -u %s %s -c %s' % (exe, flags, prompt, self.become_user, executable, success_cmd)
+                    becomecmd = '%s %s -p "%s" -S -u %s %s -c %s' % (exe, flags, prompt, self.become_user, executable, pipes.quote(success_cmd))
                 else:
-                    becomecmd = '%s %s -n -S -u %s %s -c %s' % (exe, flags, self.become_user, executable, success_cmd)
+                    becomecmd = '%s %s -n -S -u %s %s -c %s' % (exe, flags, self.become_user, executable, pipes.quote(success_cmd))
 
 
             elif self.become_method == 'su':
@@ -366,7 +366,7 @@ class PlayContext(Base):
                     return bool(SU_PROMPT_LOCALIZATIONS_RE.match(data))
 
                 prompt = detect_su_prompt
-                becomecmd = '%s %s %s -c "%s -c %s"' % (exe, flags, self.become_user, executable, success_cmd)
+                becomecmd = '%s %s - %s -c "%s -c %s"' % (exe, flags, self.become_user, executable, success_cmd)
 
             elif self.become_method == 'pbrun':
 
@@ -402,8 +402,9 @@ class PlayContext(Base):
 
             if self.become_pass:
                 self.prompt = prompt
+
             self.success_key = success_key
-            return ('%s -c %s' % (executable, pipes.quote(becomecmd)))
+            return becomecmd
 
         return cmd
 

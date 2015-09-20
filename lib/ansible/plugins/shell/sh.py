@@ -131,7 +131,7 @@ class ShellModule(object):
         ]
 
         cmd = " || ".join(csums)
-        cmd = "%s; %s || (echo \'0  \'%s)" % (test, cmd, shell_escaped_path)
+        cmd = "%s; %s || (echo \'0  \'%s)" % (pipes.quote(test), cmd, shell_escaped_path)
         return cmd
 
     def build_module_command(self, env_string, shebang, cmd, rm_tmp=None):
