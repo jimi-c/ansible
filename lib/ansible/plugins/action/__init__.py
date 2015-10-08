@@ -242,7 +242,7 @@ class ActionBase:
         afo.close()
 
         try:
-            self._connection.put_file(afile, remote_path)
+            self._connection.put_file(to_unicode(afile), remote_path)
         finally:
             os.unlink(afile)
 

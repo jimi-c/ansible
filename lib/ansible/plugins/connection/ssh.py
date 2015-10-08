@@ -316,7 +316,7 @@ class Connection(ConnectionBase):
         '''
 
         display_cmd = map(pipes.quote, cmd[:-1]) + [cmd[-1]]
-        self._display.vvv('SSH: EXEC {0}'.format(' '.join(display_cmd)), host=self.host)
+        self._display.vvv(u'SSH: EXEC {0}'.format(u' '.join(display_cmd)), host=self.host)
 
         # Start the given command. If we don't need to pipeline data, we can try
         # to use a pseudo-tty (ssh will have been invoked with -tt). If we are
@@ -607,7 +607,7 @@ class Connection(ConnectionBase):
 
         super(Connection, self).put_file(in_path, out_path)
 
-        self._display.vvv("PUT {0} TO {1}".format(in_path, out_path), host=self.host)
+        self._display.vvv(u"PUT {0} TO {1}".format(in_path, out_path), host=self.host)
         if not os.path.exists(in_path):
             raise AnsibleFileNotFound("file or module does not exist: {0}".format(in_path))
 
@@ -616,7 +616,7 @@ class Connection(ConnectionBase):
         host = '[%s]' % self.host
 
         if C.DEFAULT_SCP_IF_SSH:
-            cmd = self._build_command('scp', in_path, '{0}:{1}'.format(host, pipes.quote(out_path)))
+            cmd = self._build_command('scp', in_path, u'{0}:{1}'.format(host, pipes.quote(out_path)))
             in_data = None
         else:
             cmd = self._build_command('sftp', host)
@@ -625,7 +625,7 @@ class Connection(ConnectionBase):
         (returncode, stdout, stderr) = self._run(cmd, in_data)
 
         if returncode != 0:
-            raise AnsibleError("failed to transfer file to {0}:\n{1}\n{2}".format(out_path, stdout, stderr))
+            raise AnsibleError(u"failed to transfer file to {0}:\n{1}\n{2}".format(out_path, stdout, stderr))
 
     def fetch_file(self, in_path, out_path):
         ''' fetch a file from remote to local '''

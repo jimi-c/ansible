@@ -29,6 +29,7 @@ import sys
 from collections import defaultdict
 
 from ansible import constants as C
+from ansible.utils.unicode import to_unicode
 
 try:
     from __main__ import display
@@ -215,7 +216,7 @@ class PluginLoader:
         # requested mod_type
         pull_cache = self._plugin_path_cache[mod_type]
         try:
-            return pull_cache[name]
+            return to_unicode(pull_cache[name])
         except KeyError:
             # Cache miss.  Now let's find the plugin
             pass
@@ -243,7 +244,7 @@ class PluginLoader:
             except OSError as e:
                 display.warning("Error accessing plugin paths: %s" % str(e))
 
-            for full_path in (f for f in full_paths if os.path.isfile(f) and not f.endswith('__init__.py')):
+            for full_path in (to_unicode(f) for f in full_paths if os.path.isfile(f) and not f.endswith('__init__.py')):
                 full_name = os.path.basename(full_path)
 
                 # HACK: We have no way of executing python byte
@@ -274,7 +275,7 @@ class PluginLoader:
 
             self._searched_paths.add(path)
             try:
-                return pull_cache[name]
+                return to_unicode(pull_cache[name])
             except KeyError:
                 # Didn't find the plugin in this directory.  Load modules from
                 # the next one
@@ -291,7 +292,7 @@ class PluginLoader:
                               'documentation details page may explain '
                               'more about this rationale.' %
                               name.lstrip('_'))
-                return pull_cache[alias_name]
+                return to_unicode(pull_cache[alias_name])
 
         return None
 
