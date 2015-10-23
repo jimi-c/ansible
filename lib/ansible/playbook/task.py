@@ -76,11 +76,13 @@ class Task(Base, Conditional, Taggable, Become):
     _first_available_file = FieldAttribute(isa='list')
     _loop                 = FieldAttribute(isa='string', private=True)
     _loop_args            = FieldAttribute(isa='list', private=True)
+    _loop_var             = FieldAttribute(isa='string', default='item')
     _name                 = FieldAttribute(isa='string', default='')
     _notify               = FieldAttribute(isa='list')
     _poll                 = FieldAttribute(isa='int')
     _register             = FieldAttribute(isa='string')
-    _retries              = FieldAttribute(isa='int', default=3)
+    _retries              = FieldAttribute(isa='int', default=1)
+    _run_once             = FieldAttribute(isa='bool')
     _until                = FieldAttribute(isa='list')
 
     def __init__(self, block=None, role=None, task_include=None):

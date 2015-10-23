@@ -224,7 +224,10 @@ class TaskExecutor:
 
         items = self._squash_items(items, task_vars)
         for item in items:
-            task_vars['item'] = item
+            loop_var = self._task.loop_var or 'item'
+            if loop_var in task_vars:
+                raise AnsibleError("the loop variable '%s' is already in use. You should set the `loop_var` value for the task to something else to avoid variable collisions" % loop_var)
+            task_vars[loop_var] = item
 
             try:
                 tmp_task = self._task.copy()
@@ -243,9 +246,10 @@ class TaskExecutor:
 
             # now update the result with the item info, and append the result
             # to the list of results
-            res['item'] = item
+            res[loop_var] = item
             #TODO: send item results to callback here, instead of all at the end
             results.append(res)
+            del task_vars[loop_var]
 
         return results
 

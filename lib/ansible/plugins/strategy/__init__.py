@@ -284,9 +284,10 @@ class StrategyBase:
 
                     if task.delegate_to is not None:
                         task_vars = self._variable_manager.get_vars(loader=self._loader, play=iterator._play, host=host, task=task)
-                        self.add_tqm_variables(task_vars, play=iterator._play)
+                        task_vars = self.add_tqm_variables(task_vars, play=iterator._play)
+                        loop_var = task.loop_var or 'item'
                         if item is not None:
-                            task_vars['item'] = item
+                            task_vars[loop_var] = item
                         templar = Templar(loader=self._loader, variables=task_vars)
                         host_name = templar.template(task.delegate_to)
                         target_host = self._inventory.get_host(host_name)
