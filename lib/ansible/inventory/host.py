@@ -59,16 +59,18 @@ class Host:
             address=self.address,
             uuid=self._uuid,
             gathered_facts=self._gathered_facts,
+            has_hostkey=self.has_hostkey,
             groups=groups,
         )
 
     def deserialize(self, data):
         self.__init__()
 
-        self.name    = data.get('name')
-        self.vars    = data.get('vars', dict())
+        self.name = data.get('name')
+        self.vars = data.get('vars', dict())
         self.address = data.get('address', '')
-        self._uuid   = data.get('uuid', uuid.uuid4())
+        self.has_hostkey = data.get('has_hostkey', None)
+        self._uuid = data.get('uuid', uuid.uuid4())
 
         groups = data.get('groups', [])
         for group_data in groups:
@@ -88,6 +90,7 @@ class Host:
             self.set_variable('ansible_port', int(port))
 
         self._gathered_facts = False
+        self.has_hostkey = False
         self._uuid = uuid.uuid4()
 
     def __repr__(self):

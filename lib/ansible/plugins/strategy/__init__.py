@@ -22,14 +22,19 @@ __metaclass__ = type
 from ansible.compat.six.moves import queue as Queue
 from ansible.compat.six import iteritems, text_type, string_types
 
+import base64
+import hmac
 import json
+import os
+import subprocess
 import time
 import zlib
 
+from hashlib import md5, sha1, sha256
 from jinja2.exceptions import UndefinedError
 
 from ansible import constants as C
-from ansible.errors import AnsibleError, AnsibleParserError, AnsibleUndefinedVariable
+from ansible.errors import AnsibleError, AnsibleParserError, AnsibleUndefinedVariable, AnsibleConnectionFailure
 from ansible.executor.play_iterator import PlayIterator
 from ansible.executor.process.worker import WorkerProcess
 from ansible.executor.task_result import TaskResult
@@ -39,6 +44,8 @@ from ansible.playbook.helpers import load_list_of_blocks
 from ansible.playbook.included_file import IncludedFile
 from ansible.plugins import action_loader, connection_loader, filter_loader, lookup_loader, module_loader, test_loader
 from ansible.template import Templar
+from ansible.utils.boolean import boolean
+from ansible.utils.path import unfrackpath
 from ansible.vars.unsafe_proxy import wrap_var
 
 try:
@@ -95,6 +102,9 @@ class StrategyBase:
         # outstanding tasks still in queue
         self._blocked_hosts     = dict()
 
+        # special value for hashed ssh key detection
+        self.HASHED_KEY_MAGIC = "|1|"
+
     def run(self, iterator, play_context, result=True):
         # save the failed/unreachable hosts, as the run_handlers()
         # method will clear that information during its execution
@@ -134,12 +144,136 @@ class StrategyBase:
         vars['ansible_current_hosts'] = [h.name for h in self.get_hosts_remaining(play)]
         vars['ansible_failed_hosts'] = [h.name for h in self.get_failed_hosts(play)]
 
+    def not_in_host_file(self, host):
+        if 'USER' in os.environ:
+            user_host_file = os.path.expandvars("~${USER}/.ssh/known_hosts")
+        else:
+            user_host_file = "~/.ssh/known_hosts"
+        user_host_file = os.path.expanduser(user_host_file)
+
+        host_file_list = []
+        host_file_list.append(user_host_file)
+        host_file_list.append("/etc/ssh/ssh_known_hosts")
+        host_file_list.append("/etc/ssh/ssh_known_hosts2")
+
+        hfiles_not_found = 0
+        for hf in host_file_list:
+            if not os.path.exists(hf):
+                hfiles_not_found += 1
+                continue
+            try:
+                host_fh = open(hf)
+            except IOError, e:
+                hfiles_not_found += 1
+                continue
+            else:
+                data = host_fh.read()
+                host_fh.close()
+
+            for line in data.split("\n"):
+                line = line.strip()
+                if line is None or " " not in line:
+                    continue
+                tokens = line.split()
+                if not tokens:
+                    continue
+                if tokens[0].find(self.HASHED_KEY_MAGIC) == 0:
+                    # this is a hashed known host entry
+                    try:
+                        (kn_salt, kn_host) = tokens[0][len(self.HASHED_KEY_MAGIC):].split("|",2)
+                        hash = hmac.new(kn_salt.decode('base64'), digestmod=sha1)
+                        hash.update(host)
+                        if hash.digest() == kn_host.decode('base64'):
+                            return False
+                    except:
+                        # invalid hashed host key, skip it
+                        continue
+                else:
+                    # standard host file entry
+                    if host in tokens[0]:
+                        return False
+
+        if (hfiles_not_found == len(host_file_list)):
+            vvv("EXEC previous known host file not found for %s" % host)
+
+        return True
+
+    def fetch_host_key(self, play_context):
+        # FIXME: make hashing configurable, as well as the key type
+        keyscan_cmd = ['ssh-keyscan', '-p', text_type(play_context.port), play_context.remote_addr]
+        p = subprocess.Popen(keyscan_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
+        (stdout, stderr) = p.communicate()
+        if stdout == '':
+            raise AnsibleConnectionFailure("Failed to connect to the host to fetch the host key.")
+        else:
+            return stdout
+
+    def add_host_key(self, host_key):
+        if 'USER' in os.environ:
+            user_ssh_dir = os.path.expanduser(os.path.expandvars("~${USER}/.ssh/"))
+        else:
+            user_ssh_dir = os.path.expanduser("~/.ssh/")
+
+        if not os.path.exists(user_ssh_dir):
+            raise AnsibleError("the user ssh directory does not exist: %s" % user_ssh_dir)
+        elif not os.path.isdir(user_ssh_dir):
+            raise AnsibleError("%s is not a directory" % user_ssh_dir)
+
+        user_known_hosts = os.path.join(user_ssh_dir, 'known_hosts')
+        with open(user_known_hosts, 'a+') as f:
+            f.write(host_key)
+
     def _queue_task(self, host, task, task_vars, play_context):
         ''' handles queueing the task up to be sent to a worker '''
 
         display.debug("entering _queue_task() for %s/%s" % (host, task))
 
         task_vars['hostvars'] = self._tqm.hostvars
+
+        # we do the host key checking here to avoid contention issues
+        # on the known_hosts file later from multiple worker processes
+        if C.HOST_KEY_CHECKING and not host.has_hostkey:
+            templar = Templar(loader=self._loader, variables=task_vars)
+            temp_pc = play_context.set_task_and_variable_override(task=task, variables=task_vars, templar=templar)
+            temp_pc.post_validate(templar)
+            if temp_pc.connection in ('smart', 'ssh', 'paramiko') and self.not_in_host_file(temp_pc.remote_addr):
+                display.debug("host %s does not have a known host key, fetching it" % host)
+                try:
+                    # attempt to fetch the key with ssh-keyscan
+                    host_key = self.fetch_host_key(temp_pc)
+
+                    # shamelessly copied from here:
+                    # https://github.com/ojarva/python-sshpubkeys/blob/master/sshpubkeys/__init__.py#L39
+                    # (which shamelessly copied it from somewhere else...)
+                    decoded_key = host_key.strip().split(' ', 3)[-1].decode('base64')
+                    fp_plain = md5(decoded_key).hexdigest()
+                    key_data = ':'.join(a+b for a, b in zip(fp_plain[::2], fp_plain[1::2]))
+
+                    # prompt the user to add the key
+                    # if yes, add it, otherwise raise AnsibleConnectionFailure
+                    display.display("\nThe authenticity of host %s (%s) can't be established." % (host.name, temp_pc.remote_addr))
+                    display.display("RSA key fingerprint is SHA256:%s." % sha256(decoded_key).digest().encode('base64').strip())
+                    display.display("RSA key fingerprint is MD5:%s." % key_data)
+                    response = display.prompt("Are you sure you want to continue connecting (yes/no)? ")
+                    display.display("")
+                    if boolean(response):
+                        self.add_host_key(host_key)
+                    else:
+                        raise AnsibleConnectionFailure("Host key validation failed.")
+
+                except AnsibleConnectionFailure as e:
+                    # if that fails, add the host to the list of unreachable
+                    # hosts and send the appropriate callback
+                    self._tqm._unreachable_hosts[host.name] = True
+                    self._tqm._stats.increment('dark', host.name)
+                    tr = TaskResult(host=host, task=task, return_data=dict(msg=text_type(e)))
+                    self._tqm.send_callback('v2_runner_on_unreachable', tr)
+                    return
+
+            # finally, we set the has_hostkey flag to true for this
+            # host so we can skip it quickly in the future
+            host.has_hostkey = True
+
         # and then queue the new task
         display.debug("%s - putting task (%s) in queue" % (host, task))
         try:
