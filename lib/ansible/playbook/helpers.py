@@ -20,7 +20,8 @@ __metaclass__ = type
 
 import os
 
-from ansible.errors import AnsibleParserError
+from ansible import constants as C
+from ansible.errors import AnsibleParserError, AnsibleUndefinedVariable
 from ansible.parsing.yaml.objects import AnsibleBaseYAMLObject, AnsibleSequence
 
 
@@ -72,16 +73,18 @@ def load_list_of_tasks(ds, play, block=None, role=None, task_include=None, use_h
     from ansible.playbook.block import Block
     from ansible.playbook.handler import Handler
     from ansible.playbook.task import Task
+    from ansible.playbook.task_include import TaskInclude
+    from ansible.template import Templar
 
     assert isinstance(ds, list)
 
     task_list = []
-    for task in ds:
-        assert isinstance(task, dict)
+    for task_ds in ds:
+        assert isinstance(task_ds, dict)
 
-        if 'block' in task:
+        if 'block' in task_ds:
             t = Block.load(
-                task,
+                task_ds,
                 play=play,
                 parent_block=block,
                 role=role,
@@ -90,13 +93,90 @@ def load_list_of_tasks(ds, play, block=None, role=None, task_include=None, use_h
                 variable_manager=variable_manager,
                 loader=loader,
             )
+            task_list.append(t)
         else:
-            if use_handlers:
-                t = Handler.load(task, block=block, role=role, task_include=task_include, variable_manager=variable_manager, loader=loader)
-            else:
-                t = Task.load(task, block=block, role=role, task_include=task_include, variable_manager=variable_manager, loader=loader)
+            if 'include' in task_ds:
+                t = TaskInclude.load(task_ds, block=block, role=role, task_include=task_include, variable_manager=variable_manager, loader=loader)
+                if t.static or C.DEFAULT_TASK_INCLUDES_STATIC or (use_handlers and C.DEFAULT_HANDLER_INCLUDES_STATIC):
+                    if t.loop is not None:
+                        raise AnsibleParserError("You cannot use 'static' on an include with a loop", obj=task_ds)
 
-        task_list.append(t)
+                    all_vars = variable_manager.get_vars(loader=loader, play=play, task=t)
+                    templar = Templar(loader=loader, variables=all_vars)
+                    t.post_validate(templar=templar)
+
+                    if task_include:
+                        # handle relative includes by walking up the list of parent include
+                        # tasks and checking the relative result to see if it exists
+                        parent_include = task_include
+                        cumulative_path = None
+                        while parent_include is not None:
+                            parent_include_dir = templar.template(os.path.dirname(parent_include.args.get('_raw_params')))
+                            if cumulative_path is None:
+                                cumulative_path = parent_include_dir
+                            elif not os.path.isabs(cumulative_path):
+                                cumulative_path = os.path.join(parent_include_dir, cumulative_path)
+                            include_target = templar.template(t.args['_raw_params'])
+                            if t._role:
+                                new_basedir = os.path.join(t._role._role_path, 'tasks', cumulative_path)
+                                include_file = loader.path_dwim_relative(new_basedir, 'tasks', include_target)
+                            else:
+                                include_file = loader.path_dwim_relative(loader.get_basedir(), cumulative_path, include_target)
+
+                            if os.path.exists(include_file):
+                                break
+                            else:
+                                parent_include = parent_include._task_include
+                    else:
+                        try:
+                            include_target = templar.template(t.args['_raw_params'])
+                        except AnsibleUndefinedVariable as e:
+                            raise AnsibleParserError(
+                                      "Error when evaluating variable in include name: %s.\n\n" \
+                                      "When using static includes, ensure that any variables used in their names are defined in vars/vars_files\n" \
+                                      "or extra-vars passed in from the command line. Static includes cannot use variables from inventory\n" \
+                                      "sources like group or host vars." % t.args['_raw_params'],
+                                      obj=task_ds,
+                                      suppress_extended_error=True,
+                                  )
+                        if t._role:
+                            include_file = loader.path_dwim_relative(t._role._role_path, 'tasks', include_target)
+                        else:
+                            include_file = loader.path_dwim(include_target)
+
+                    data = loader.load_from_file(include_file)
+                    if data is None:
+                        return []
+                    elif not isinstance(data, list):
+                        raise AnsibleError("included task files must contain a list of tasks", obj=task_ds)
+
+                    included_blocks = load_list_of_blocks(
+                        data,
+                        play=play,
+                        parent_block=block,
+                        task_include=task_include,
+                        role=role,
+                        use_handlers=use_handlers,
+                        loader=loader,
+                        variable_manager=variable_manager,
+                    )
+
+                    # FIXME: send callback here somehow...
+                    # FIXME: handlers shouldn't need this special handling, but do
+                    #        right now because they don't iterate blocks correctly
+                    if use_handlers:
+                        for b in included_blocks:
+                            task_list.extend(b.block)
+                    else:
+                        task_list.extend(included_blocks)
+                else:
+                    task_list.append(t)
+            elif use_handlers:
+                t = Handler.load(task_ds, block=block, role=role, task_include=task_include, variable_manager=variable_manager, loader=loader)
+                task_list.append(t)
+            else:
+                t = Task.load(task_ds, block=block, role=role, task_include=task_include, variable_manager=variable_manager, loader=loader)
+                task_list.append(t)
 
     return task_list
 
