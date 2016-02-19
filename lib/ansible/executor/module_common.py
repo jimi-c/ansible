@@ -30,6 +30,7 @@ import shlex
 from ansible import __version__
 from ansible import constants as C
 from ansible.errors import AnsibleError
+from ansible.plugins import module_utils_loader
 from ansible.utils.unicode import to_bytes
 
 REPLACER          = "#<<INCLUDE_ANSIBLE_MODULE_COMMON>>"
@@ -45,17 +46,14 @@ REPLACER_SELINUX  = "<<SELINUX_SPECIAL_FILESYSTEMS>>"
 # specify an encoding for the python source file
 ENCODING_STRING = '# -*- coding: utf-8 -*-'
 
-# we've moved the module_common relative to the snippets, so fix the path
-_SNIPPET_PATH = os.path.join(os.path.dirname(__file__), '..', 'module_utils')
-
 # ******************************************************************************
 
-def _slurp(path):
-    if not os.path.exists(path):
-        raise AnsibleError("imported module support code does not exist at %s" % path)
-    fd = open(path)
-    data = fd.read()
-    fd.close()
+def _slurp(snippet_name):
+    path = module_utils_loader.find_plugin(snippet_name)
+    if path is None:
+        raise AnsibleError("imported module support code does not exist: %s" % snippet_name)
+    with open(path, 'r') as fd:
+        data = fd.read()
     return data
 
 def _find_snippet_imports(module_data, module_path, strip_comments):
@@ -83,24 +81,19 @@ def _find_snippet_imports(module_data, module_path, strip_comments):
     for line in lines:
 
         if REPLACER in line:
-            output.write(_slurp(os.path.join(_SNIPPET_PATH, "basic.py")))
+            output.write(_slurp('basic'))
             snippet_names.append('basic')
-        if REPLACER_WINDOWS in line:
-            ps_data = _slurp(os.path.join(_SNIPPET_PATH, "powershell.ps1"))
-            output.write(ps_data)
+        elif REPLACER_WINDOWS in line:
+            output.write(_slurp('powershell'))
             snippet_names.append('powershell')
         elif line.startswith('from ansible.module_utils.'):
             tokens=line.split(".")
             import_error = False
-            if len(tokens) != 3:
-                import_error = True
-            if " import *" not in line:
-                import_error = True
-            if import_error:
+            if len(tokens) != 3 or " import *" not in line:
                 raise AnsibleError("error importing module in %s, expecting format like 'from ansible.module_utils.<lib name> import *'" % module_path)
             snippet_name = tokens[2].split()[0]
             snippet_names.append(snippet_name)
-            output.write(_slurp(os.path.join(_SNIPPET_PATH, snippet_name + ".py")))
+            output.write(_slurp(snippet_name))
         else:
             if strip_comments and line.startswith("#") or line == '':
                 pass
