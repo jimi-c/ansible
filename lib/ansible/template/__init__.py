@@ -26,6 +26,7 @@ import re
 
 from io import StringIO
 from numbers import Number
+from collections import MutableMapping
 
 from jinja2 import Environment
 from jinja2.loaders import FileSystemLoader
@@ -275,7 +276,7 @@ class Templar:
         are being changed.
         '''
 
-        assert isinstance(variables, dict)
+        assert isinstance(variables, MutableMapping)
         self._available_variables = variables
         self._cached_result       = {}
 

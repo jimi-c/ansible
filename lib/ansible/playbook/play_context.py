@@ -28,6 +28,8 @@ import random
 import re
 import string
 
+from collections import MutableMapping
+
 from ansible.compat.six import iteritems, string_types
 from ansible import constants as C
 from ansible.errors import AnsibleError
@@ -379,7 +381,7 @@ class PlayContext(Base):
                     continue
                 # if delegation task ONLY use delegated host vars, avoid delegated FOR host vars
                 if task.delegate_to is not None:
-                    if isinstance(delegated_vars, dict) and variable_name in delegated_vars:
+                    if isinstance(delegated_vars, MutableMapping) and variable_name in delegated_vars:
                         setattr(new_info, attr, delegated_vars[variable_name])
                         attrs_considered.append(attr)
                 elif variable_name in variables:

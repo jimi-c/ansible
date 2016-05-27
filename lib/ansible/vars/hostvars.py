@@ -75,7 +75,7 @@ class HostVars(collections.Mapping):
         if host is None:
             raise j2undefined
 
-        return self._variable_manager.get_vars(loader=self._loader, host=host, include_hostvars=False)
+        return self._variable_manager.get_vars(loader=self._loader, host=host, include_hostvars=False).to_dict()
 
     def __getitem__(self, host_name):
         data = self.raw_get(host_name)
