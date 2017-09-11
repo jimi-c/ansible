@@ -1362,6 +1362,14 @@ USE_PERSISTENT_CONNECTIONS:
   - {key: use_persistent_connections, section: defaults}
   type: boolean
   yaml: {key: defaults.use_persistent_connections}
+USE_PEX:
+  default: False
+  description: 'Use pex to package modules'
+  env: [{name: ANSIBLE_USE_PEX}]
+  ini:
+  - {key: use_pex, section: defaults}
+  type: boolean
+  yaml: {key: defaults.use_pex}
 VARIABLE_PRECEDENCE:
   default: [all_inventory, groups_inventory, all_plugins_inventory, all_plugins_play, groups_plugins_inventory, groups_plugins_play]
   description: 'TODO: write it'

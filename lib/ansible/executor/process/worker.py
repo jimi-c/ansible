@@ -97,9 +97,9 @@ class WorkerProcess(multiprocessing.Process):
         signify that they are ready for their next task.
         '''
 
-        # import cProfile, pstats, StringIO
-        # pr = cProfile.Profile()
-        # pr.enable()
+        #import cProfile, pstats, StringIO
+        #pr = cProfile.Profile()
+        #pr.enable()
 
         if HAS_PYCRYPTO_ATFORK:
             atfork()
@@ -127,6 +127,14 @@ class WorkerProcess(multiprocessing.Process):
                 executor_result,
                 task_fields=self._task.dump_attrs(),
             )
+
+            #pr.disable()
+            #s = StringIO.StringIO()
+            #sortby = 'cumtime'
+            #ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+            #ps.print_stats()
+            #with open('worker_%06d.stats' % os.getpid(), 'w') as f:
+            #    f.write(s.getvalue())
 
             # put the result on the result queue
             display.debug("sending task result for task %s" % self._task._uuid)
@@ -161,11 +169,3 @@ class WorkerProcess(multiprocessing.Process):
                     display.debug(u"WORKER TRACEBACK: %s" % to_text(traceback.format_exc()))
 
         display.debug("WORKER PROCESS EXITING")
-
-        # pr.disable()
-        # s = StringIO.StringIO()
-        # sortby = 'time'
-        # ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-        # ps.print_stats()
-        # with open('worker_%06d.stats' % os.getpid(), 'w') as f:
-        #     f.write(s.getvalue())

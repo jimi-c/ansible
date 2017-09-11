@@ -38,10 +38,18 @@ from ansible.errors import AnsibleError
 from ansible.module_utils._text import to_bytes, to_text
 from ansible.plugins.loader import module_utils_loader, ps_module_utils_loader
 from ansible.plugins.shell.powershell import async_watchdog, async_wrapper, become_wrapper, leaf_exec, exec_wrapper
+from ansible.utils.path import unfrackpath
 # Must import strategy and use write_locks from there
 # If we import write_locks directly then we end up binding a
 # variable to the object and then it never gets updated.
 from ansible.executor import action_write_locks
+
+try:
+    from pex.pex_builder import PEXBuilder
+    from pex.resolver import resolve as pex_resolve
+    HAS_PEX = True
+except ImportError:
+    HAS_PEX = False
 
 try:
     from __main__ import display
@@ -65,6 +73,95 @@ ENCODING_STRING = u'# -*- coding: utf-8 -*-'
 _MODULE_UTILS_PATH = os.path.join(os.path.dirname(__file__), '..', 'module_utils')
 
 # ******************************************************************************
+
+PEX_TEMPLATE = u'''%(shebang)s
+%(coding)s
+PEX_WRAPPER = True
+# This code is part of Ansible, but is an independent component.
+# The code in this particular templatable string, and this templatable string
+# only, is BSD licensed.  Modules which end up using this snippet, which is
+# dynamically combined together by Ansible still belong to the author of the
+# module, and they may assign their own license to the complete work.
+#
+# Copyright (c), Ansible, Inc. 2017
+#
+# Redistribution and use in source and binary forms, with or without modification,
+# are permitted provided that the following conditions are met:
+#
+#    * Redistributions of source code must retain the above copyright
+#      notice, this list of conditions and the following disclaimer.
+#    * Redistributions in binary form must reproduce the above copyright notice,
+#      this list of conditions and the following disclaimer in the documentation
+#      and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+# IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+# USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+import base64
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+if sys.version_info < (3,):
+    bytes = str
+    PY3 = False
+else:
+    unicode = str
+    PY3 = True
+
+PEXDATA = base64.b64decode("""%(pexdata)s""")
+
+if __name__ == '__main__':
+    PEX_PARAMS = %(params)s
+    if PY3:
+        PEX_PARAMS = PEX_PARAMS.encode('utf-8')
+    try:
+        # There's a race condition with the controller removing the
+        # remote_tmpdir and this module executing under async.  So we cannot
+        # store this in remote_tmpdir (use system tempdir instead)
+        temp_path = tempfile.mkdtemp(prefix='ansible_')
+
+        module = os.path.join(temp_path, '%(ansible_module)s.pex')
+        f = open(module, 'wb')
+        f.write(PEXDATA)
+        f.close()
+
+        os.chmod(module, int('750', 8))
+        p = subprocess.Popen([module], env=os.environ, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+        (stdout, stderr) = p.communicate(PEX_PARAMS)
+
+        if not isinstance(stderr, (bytes, unicode)):
+            stderr = stderr.read()
+        if not isinstance(stdout, (bytes, unicode)):
+            stdout = stdout.read()
+        if PY3:
+            sys.stderr.buffer.write(stderr)
+            sys.stdout.buffer.write(stdout)
+        else:
+            sys.stderr.write(stderr)
+            sys.stdout.write(stdout)
+        exitcode = p.returncode
+
+    except:
+        exitcode = 1
+
+    finally:
+        try:
+            shutil.rmtree(temp_path)
+        except (NameError, OSError):
+            # tempdir creation probably failed
+            pass
+
+    sys.exit(exitcode)
+'''
 
 ANSIBALLZ_TEMPLATE = u'''%(shebang)s
 %(coding)s
@@ -644,87 +741,7 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
     if module_substyle == 'python':
         params = dict(ANSIBLE_MODULE_ARGS=module_args,)
         python_repred_params = repr(json.dumps(params))
-
-        try:
-            compression_method = getattr(zipfile, module_compression)
-        except AttributeError:
-            display.warning(u'Bad module compression string specified: %s.  Using ZIP_STORED (no compression)' % module_compression)
-            compression_method = zipfile.ZIP_STORED
-
-        lookup_path = os.path.join(C.DEFAULT_LOCAL_TMP, 'ansiballz_cache')
-        cached_module_filename = os.path.join(lookup_path, "%s-%s" % (module_name, module_compression))
-
-        zipdata = None
-        # Optimization -- don't lock if the module has already been cached
-        if os.path.exists(cached_module_filename):
-            display.debug('ANSIBALLZ: using cached module: %s' % cached_module_filename)
-            zipdata = open(cached_module_filename, 'rb').read()
-        else:
-            if module_name in action_write_locks.action_write_locks:
-                display.debug('ANSIBALLZ: Using lock for %s' % module_name)
-                lock = action_write_locks.action_write_locks[module_name]
-            else:
-                # If the action plugin directly invokes the module (instead of
-                # going through a strategy) then we don't have a cross-process
-                # Lock specifically for this module.  Use the "unexpected
-                # module" lock instead
-                display.debug('ANSIBALLZ: Using generic lock for %s' % module_name)
-                lock = action_write_locks.action_write_locks[None]
-
-            display.debug('ANSIBALLZ: Acquiring lock')
-            with lock:
-                display.debug('ANSIBALLZ: Lock acquired: %s' % id(lock))
-                # Check that no other process has created this while we were
-                # waiting for the lock
-                if not os.path.exists(cached_module_filename):
-                    display.debug('ANSIBALLZ: Creating module')
-                    # Create the module zip data
-                    zipoutput = BytesIO()
-                    zf = zipfile.ZipFile(zipoutput, mode='w', compression=compression_method)
-                    # Note: If we need to import from release.py first,
-                    # remember to catch all exceptions: https://github.com/ansible/ansible/issues/16523
-                    zf.writestr('ansible/__init__.py',
-                                b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n__version__="' +
-                                to_bytes(__version__) + b'"\n__author__="' +
-                                to_bytes(__author__) + b'"\n')
-                    zf.writestr('ansible/module_utils/__init__.py', b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n')
-
-                    zf.writestr('ansible_module_%s.py' % module_name, b_module_data)
-
-                    py_module_cache = {('__init__',): (b'', '[builtin]')}
-                    recursive_finder(module_name, b_module_data, py_module_names, py_module_cache, zf)
-                    zf.close()
-                    zipdata = base64.b64encode(zipoutput.getvalue())
-
-                    # Write the assembled module to a temp file (write to temp
-                    # so that no one looking for the file reads a partially
-                    # written file)
-                    if not os.path.exists(lookup_path):
-                        # Note -- if we have a global function to setup, that would
-                        # be a better place to run this
-                        os.makedirs(lookup_path)
-                    display.debug('ANSIBALLZ: Writing module')
-                    with open(cached_module_filename + '-part', 'wb') as f:
-                        f.write(zipdata)
-
-                    # Rename the file into its final position in the cache so
-                    # future users of this module can read it off the
-                    # filesystem instead of constructing from scratch.
-                    display.debug('ANSIBALLZ: Renaming module')
-                    os.rename(cached_module_filename + '-part', cached_module_filename)
-                    display.debug('ANSIBALLZ: Done creating module')
-
-            if zipdata is None:
-                display.debug('ANSIBALLZ: Reading module after lock')
-                # Another process wrote the file while we were waiting for
-                # the write lock.  Go ahead and read the data from disk
-                # instead of re-creating it.
-                try:
-                    zipdata = open(cached_module_filename, 'rb').read()
-                except IOError:
-                    raise AnsibleError('A different worker process failed to create module file. '
-                                       'Look at traceback for that process for debugging information.')
-        zipdata = to_text(zipdata, errors='surrogate_or_strict')
+        now = datetime.datetime.utcnow()
 
         shebang, interpreter = _get_shebang(u'/usr/bin/python', task_vars)
         if shebang is None:
@@ -735,22 +752,167 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
         interpreter_parts = interpreter.split(u' ')
         interpreter = u"'{0}'".format(u"', '".join(interpreter_parts))
 
-        now = datetime.datetime.utcnow()
-        output.write(to_bytes(ACTIVE_ANSIBALLZ_TEMPLATE % dict(
-            zipdata=zipdata,
-            ansible_module=module_name,
-            params=python_repred_params,
-            shebang=shebang,
-            interpreter=interpreter,
-            coding=ENCODING_STRING,
-            year=now.year,
-            month=now.month,
-            day=now.day,
-            hour=now.hour,
-            minute=now.minute,
-            second=now.second,
-        )))
-        b_module_data = output.getvalue()
+        if C.USE_PEX:
+            if not HAS_PEX:
+                raise AnsibleError('Ansible is configured to use pex for module formatting, however pex is not installed. '
+                                   'Please install pex or set "use_pex = no" in your ansible.cfg.')
+
+            lookup_path = os.path.join(C.DEFAULT_LOCAL_TMP, 'pex_cache')
+            cached_module_filename = os.path.join(lookup_path, "%s-pex" % module_name)
+
+            if not os.path.exists(cached_module_filename):
+                # Write the assembled module to a temp file (write to temp
+                # so that no one looking for the file reads a partially
+                # written file)
+                if not os.path.exists(lookup_path):
+                    os.makedirs(lookup_path)
+
+                pb = PEXBuilder(path=C.DEFAULT_LOCAL_TMP)
+                pb.add_source(module_path, './%s.py' % module_name)
+                def adder(arg, dirname, names):
+                    for name in names:
+                        (path, ext) = os.path.splitext(name)
+                        if ext == '.py':
+                            reg_path = unfrackpath('%s/%s' % (dirname, name))
+                            start = reg_path
+                            path_parts = []
+                            while start:
+                               (start, end) = os.path.split(start)
+                               if end == 'module_utils':
+                                   break
+                               else:
+                                   path_parts.append(end)
+                            sub_path = os.path.join(*reversed(path_parts))
+                            pb.add_resource(reg_path, 'module_utils/%s' % sub_path)
+
+                os.path.walk(_MODULE_UTILS_PATH, adder, None)
+
+                # TODO: figure out how we're actually going to get deps for a module here,
+                #       and figure out how to make PEX only look on the local system for the
+                #       deps (not on PyPI).
+                #rs = pex_resolve(['boto'])
+                #for dist in rs:
+                #    pb.add_distribution(dist)
+                #    pb.add_requirement(dist.as_requirement())
+
+                pexout = BytesIO()
+                pb.set_shebang(shebang)
+                pb.set_entry_point(module_name)
+                pb.build(pexout, bytecode_compile=False)
+                pex_data = base64.b64encode(pexout.getvalue())
+ 
+                # TODO: lock the cache, save the cached pex data from above
+            else:
+                with open(cached_module_filename, 'ra') as f:
+                    pex_data = f.read()
+
+            output.write(to_bytes(PEX_TEMPLATE % dict(
+                ansible_module=module_name,
+                params=python_repred_params,
+                shebang=shebang,
+                coding=ENCODING_STRING,
+                pexdata=pex_data,
+            )))
+            b_module_data = output.getvalue()
+
+        else:
+            try:
+                compression_method = getattr(zipfile, module_compression)
+            except AttributeError:
+                display.warning(u'Bad module compression string specified: %s.  Using ZIP_STORED (no compression)' % module_compression)
+                compression_method = zipfile.ZIP_STORED
+
+            lookup_path = os.path.join(C.DEFAULT_LOCAL_TMP, 'ansiballz_cache')
+            cached_module_filename = os.path.join(lookup_path, "%s-%s" % (module_name, module_compression))
+
+            zipdata = None
+            # Optimization -- don't lock if the module has already been cached
+            if os.path.exists(cached_module_filename):
+                display.debug('ANSIBALLZ: using cached module: %s' % cached_module_filename)
+                zipdata = open(cached_module_filename, 'rb').read()
+            else:
+                if module_name in action_write_locks.action_write_locks:
+                    display.debug('ANSIBALLZ: Using lock for %s' % module_name)
+                    lock = action_write_locks.action_write_locks[module_name]
+                else:
+                    # If the action plugin directly invokes the module (instead of
+                    # going through a strategy) then we don't have a cross-process
+                    # Lock specifically for this module.  Use the "unexpected
+                    # module" lock instead
+                    display.debug('ANSIBALLZ: Using generic lock for %s' % module_name)
+                    lock = action_write_locks.action_write_locks[None]
+
+                # Write the assembled module to a temp file (write to temp
+                # so that no one looking for the file reads a partially
+                # written file)
+                if not os.path.exists(lookup_path):
+                    # Note -- if we have a global function to setup, that would be a better place to run this
+                    os.makedirs(lookup_path)
+
+                display.debug('ANSIBALLZ: Acquiring lock')
+                with lock:
+                    display.debug('ANSIBALLZ: Lock acquired: %s' % id(lock))
+                    # Check that no other process has created this while we were
+                    # waiting for the lock
+                    if not os.path.exists(cached_module_filename):
+                        display.debug('ANSIBALLZ: Creating module')
+                        # Create the module zip data
+                        zipoutput = BytesIO()
+                        zf = zipfile.ZipFile(zipoutput, mode='w', compression=compression_method)
+                        # Note: If we need to import from release.py first,
+                        # remember to catch all exceptions: https://github.com/ansible/ansible/issues/16523
+                        zf.writestr('ansible/__init__.py',
+                                    b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n__version__="' +
+                                    to_bytes(__version__) + b'"\n__author__="' +
+                                    to_bytes(__author__) + b'"\n')
+                        zf.writestr('ansible/module_utils/__init__.py', b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n')
+
+                        zf.writestr('ansible_module_%s.py' % module_name, b_module_data)
+
+                        py_module_cache = {('__init__',): (b'', '[builtin]')}
+                        recursive_finder(module_name, b_module_data, py_module_names, py_module_cache, zf)
+                        zf.close()
+                        zipdata = base64.b64encode(zipoutput.getvalue())
+
+                        display.debug('ANSIBALLZ: Writing module')
+                        with open(cached_module_filename + '-part', 'wb') as f:
+                            f.write(zipdata)
+
+                        # Rename the file into its final position in the cache so
+                        # future users of this module can read it off the
+                        # filesystem instead of constructing from scratch.
+                        display.debug('ANSIBALLZ: Renaming module')
+                        os.rename(cached_module_filename + '-part', cached_module_filename)
+                        display.debug('ANSIBALLZ: Done creating module')
+
+                if zipdata is None:
+                    display.debug('ANSIBALLZ: Reading module after lock')
+                    # Another process wrote the file while we were waiting for
+                    # the write lock.  Go ahead and read the data from disk
+                    # instead of re-creating it.
+                    try:
+                        zipdata = open(cached_module_filename, 'rb').read()
+                    except IOError:
+                        raise AnsibleError('A different worker process failed to create module file. '
+                                           'Look at traceback for that process for debugging information.')
+
+            zipdata = to_text(zipdata, errors='surrogate_or_strict')
+
+            output.write(to_bytes(ACTIVE_ANSIBALLZ_TEMPLATE % dict(
+                zipdata=zipdata,
+                ansible_module=module_name,
+                params=python_repred_params,
+                shebang=shebang,
+                interpreter=interpreter,
+                coding=ENCODING_STRING,
+                year=now.year,
+                month=now.month,
+                day=now.day,
+                hour=now.hour,
+                minute=now.minute,
+                second=now.second,
+            )))
+            b_module_data = output.getvalue()
 
     elif module_substyle == 'powershell':
         # Powershell/winrm don't actually make use of shebang so we can
