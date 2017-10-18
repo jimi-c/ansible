@@ -195,7 +195,7 @@ class CallbackModule(CallbackBase):
         hosts = sorted(stats.processed.keys())
 
         t = prettytable.PrettyTable(['Host', 'Ok', 'Changed', 'Unreachable',
-                                     'Failures'])
+                                     'Failures', 'Rescued', 'Ignored'])
 
         failures = False
         unreachable = False
@@ -209,7 +209,7 @@ class CallbackModule(CallbackBase):
                 unreachable = True
 
             t.add_row([h] + [s[k] for k in ['ok', 'changed', 'unreachable',
-                                            'failures']])
+                                            'failures', 'rescued', 'ignored']])
 
         attachments = []
         msg_items = [
