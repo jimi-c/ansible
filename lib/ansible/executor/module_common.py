@@ -133,9 +133,9 @@ if scriptdir is not None:
 
 import base64
 import shutil
-import zipfile
 import tempfile
-import subprocess
+import zipimport
+import zipfile
 
 if sys.version_info < (3,):
     bytes = str
@@ -146,27 +146,35 @@ else:
 
 ZIPDATA = """%(zipdata)s"""
 
-def invoke_module(module, modlib_path, json_params):
-    pythonpath = os.environ.get('PYTHONPATH')
-    if pythonpath:
-        os.environ['PYTHONPATH'] = ':'.join((modlib_path, pythonpath))
-    else:
-        os.environ['PYTHONPATH'] = modlib_path
+def invoke_module(modlib_path, json_params):
+    # When installed via setuptools (including python setup.py install),
+    # ansible may be installed with an easy-install.pth file.  That file
+    # may load the system-wide install of ansible rather than the one in
+    # the module.  sitecustomize is the only way to override that setting.
+    z = zipfile.ZipFile(modlib_path, mode='a')
 
-    p = subprocess.Popen([%(interpreter)s, module], env=os.environ, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
-    (stdout, stderr) = p.communicate(json_params)
+    # py3: modlib_path will be text, py2: it's bytes.  Need bytes at the end
+    sitecustomize = u'import sys\\nsys.path.insert(0,"%%s")\\n' %%  modlib_path
+    sitecustomize = sitecustomize.encode('utf-8')
+    # Use a ZipInfo to work around zipfile limitation on hosts with
+    # clocks set to a pre-1980 year (for instance, Raspberry Pi)
+    zinfo = zipfile.ZipInfo()
+    zinfo.filename = 'sitecustomize.py'
+    zinfo.date_time = ( %(year)i, %(month)i, %(day)i, %(hour)i, %(minute)i, %(second)i)
+    z.writestr(zinfo, sitecustomize)
+    z.close()
 
-    if not isinstance(stderr, (bytes, unicode)):
-        stderr = stderr.read()
-    if not isinstance(stdout, (bytes, unicode)):
-        stdout = stdout.read()
-    if PY3:
-        sys.stderr.buffer.write(stderr)
-        sys.stdout.buffer.write(stdout)
-    else:
-        sys.stderr.write(stderr)
-        sys.stdout.write(stdout)
-    return p.returncode
+    # Put the zipped up module_utils we got from the controller first in the python path so that we
+    # can monkeypatch the right basic
+    sys.path.insert(0, modlib_path)
+
+    # Monkeypatch the parameters into basic
+    from ansible.module_utils import basic
+    basic._ANSIBLE_ARGS = json_params
+
+    # Run the module!  By importing it as '__main__', it thinks it is executing as a script
+    importer = zipimport.zipimporter(modlib_path)
+    importer.load_module('__main__')
 
 def debug(command, zipped_mod, json_params):
     # The code here normally doesn't run.  It's only used for debugging on the
@@ -305,38 +313,14 @@ if __name__ == '__main__':
         # store this in remote_tmpdir (use system tempdir instead)
         temp_path = tempfile.mkdtemp(prefix='ansible_')
 
-        zipped_mod = os.path.join(temp_path, 'ansible_modlib.zip')
-        modlib = open(zipped_mod, 'wb')
-        modlib.write(base64.b64decode(ZIPDATA))
-        modlib.close()
+        zipped_mod = os.path.join(temp_path, 'ansible_payload_%(ansible_module)s.zip')
+        with open(zipped_mod, 'wb') as modlib:
+            modlib.write(base64.b64decode(ZIPDATA))
 
         if len(sys.argv) == 2:
             exitcode = debug(sys.argv[1], zipped_mod, ANSIBALLZ_PARAMS)
         else:
-            z = zipfile.ZipFile(zipped_mod, mode='r')
-            module = os.path.join(temp_path, 'ansible_module_%(ansible_module)s.py')
-            f = open(module, 'wb')
-            f.write(z.read('ansible_module_%(ansible_module)s.py'))
-            f.close()
-
-            # When installed via setuptools (including python setup.py install),
-            # ansible may be installed with an easy-install.pth file.  That file
-            # may load the system-wide install of ansible rather than the one in
-            # the module.  sitecustomize is the only way to override that setting.
-            z = zipfile.ZipFile(zipped_mod, mode='a')
-
-            # py3: zipped_mod will be text, py2: it's bytes.  Need bytes at the end
-            sitecustomize = u'import sys\\nsys.path.insert(0,"%%s")\\n' %%  zipped_mod
-            sitecustomize = sitecustomize.encode('utf-8')
-            # Use a ZipInfo to work around zipfile limitation on hosts with
-            # clocks set to a pre-1980 year (for instance, Raspberry Pi)
-            zinfo = zipfile.ZipInfo()
-            zinfo.filename = 'sitecustomize.py'
-            zinfo.date_time = ( %(year)i, %(month)i, %(day)i, %(hour)i, %(minute)i, %(second)i)
-            z.writestr(zinfo, sitecustomize)
-            z.close()
-
-            exitcode = invoke_module(module, zipped_mod, ANSIBALLZ_PARAMS)
+            invoke_module(zipped_mod, ANSIBALLZ_PARAMS)
     finally:
         try:
             shutil.rmtree(temp_path)
@@ -690,7 +674,7 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
                                 to_bytes(__author__) + b'"\n')
                     zf.writestr('ansible/module_utils/__init__.py', b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n')
 
-                    zf.writestr('ansible_module_%s.py' % module_name, b_module_data)
+                    zf.writestr('__main__.py', b_module_data)
 
                     py_module_cache = {('__init__',): (b'', '[builtin]')}
                     recursive_finder(module_name, b_module_data, py_module_names, py_module_cache, zf)

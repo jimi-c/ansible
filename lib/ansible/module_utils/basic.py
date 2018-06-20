@@ -62,6 +62,7 @@ PASS_BOOLS = ('no_log', 'debug', 'diff')
 # The functions available here can be used to do many common tasks,
 # to simplify development of Python modules.
 
+import __main__
 import atexit
 import locale
 import os
@@ -927,6 +928,9 @@ class AnsibleModule(object):
             self.deprecate('Setting check_invalid_arguments is deprecated and will be removed.'
                            ' Update the code for this module  In the future, AnsibleModule will'
                            ' always check for invalid arguments.', version='2.9')
+
+        # Hack: monkeypatch __file__ into __main__
+        __main__.__file__ = os.path.join(self.tmpdir, 'AnsiBallZ.zip')
 
     @property
     def tmpdir(self):

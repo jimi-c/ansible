@@ -132,10 +132,6 @@ class TestAnsibleModuleLogJournal:
     def test_output_matches(self, am, mocker, msg, param):
         journal_send = mocker.patch('systemd.journal.send')
         am.log(msg)
-        import q ; q.q(am)
-        import q ; q.q(am.log)
-        import q ; q.q(journal_send.call_args)
-        import q ; q.q(journal_send.call_args[0])
         assert journal_send.call_count == 1, 'journal.send not called exactly once'
         assert journal_send.call_args[1]['MESSAGE'].endswith(param)
 
