@@ -12,6 +12,7 @@ import imp
 import os
 import os.path
 import sys
+import time
 import warnings
 
 from collections import defaultdict
@@ -73,6 +74,9 @@ class PluginLoader:
 
         self._extra_dirs = []
         self._searched_paths = set()
+
+        # last updated time, so we know when the loader paths were last modified
+        self.last_update = time.time()
 
     def __setstate__(self, data):
         '''
@@ -230,6 +234,7 @@ class PluginLoader:
                 self._extra_dirs.append(directory)
                 self._paths = None
                 display.debug('Added %s to loader search path' % (directory))
+                self.last_update = time.time()
 
     def _find_plugin(self, name, mod_type='', ignore_deprecated=False, check_aliases=False):
         ''' Find a plugin named name '''
