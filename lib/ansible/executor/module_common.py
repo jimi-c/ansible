@@ -42,6 +42,7 @@ from ansible.plugins.shell.powershell import async_watchdog, async_wrapper, beco
 # If we import write_locks directly then we end up binding a
 # variable to the object and then it never gets updated.
 from ansible.executor import action_write_locks
+from ansible.utils.hashing import secure_hash
 
 try:
     from __main__ import display
@@ -64,6 +65,9 @@ b_ENCODING_STRING = b'# -*- coding: utf-8 -*-'
 
 # module_common is relative to module_utils, so fix the path
 _MODULE_UTILS_PATH = os.path.join(os.path.dirname(__file__), '..', 'module_utils')
+
+mod_utils_paths = {}
+mod_utils_update_time = None
 
 # ******************************************************************************
 
@@ -145,7 +149,26 @@ def _ansiballz_main():
         unicode = str
         PY3 = True
 
-    ZIPDATA = """%(zipdata)s"""
+    MODULE_DATA = """%(module_data)s"""
+    MODULE_UTILS_DATA = """%(modutils_data)s"""
+    MODULE_UTILS_PATH = os.path.abspath(os.path.expanduser('~/.ansible/module_utils_cache'))
+
+    def setup_module_utils():
+        extract_path = os.path.join(MODULE_UTILS_PATH, 'ansible')
+        if not os.path.exists(extract_path):
+            os.makedirs(extract_path)
+            zip_path = os.path.join(extract_path, 'mod_utils.zip')
+            with open(zip_path, mode='wb') as modutils:
+                modutils.write(base64.b64decode(MODULE_UTILS_DATA))
+            z = zipfile.ZipFile(zip_path, mode='r')
+            z.extractall(path=extract_path)
+            z.close()
+            # touch the init file in the extracted path to make sure
+            # the module works when inserted into the sys.path
+            with open(os.path.join(extract_path, '__init__.py'), 'wt'):
+                pass
+        sys.path.insert(0, MODULE_UTILS_PATH)
+
 
     def invoke_module(modlib_path, json_params):
         # When installed via setuptools (including python setup.py install),
@@ -299,7 +322,11 @@ def _ansiballz_main():
 
         zipped_mod = os.path.join(temp_path, 'ansible_payload_%(ansible_module)s.zip')
         with open(zipped_mod, 'wb') as modlib:
-            modlib.write(base64.b64decode(ZIPDATA))
+            modlib.write(base64.b64decode(MODULE_DATA))
+
+        # extract the module utils zipped data (if necessary)
+        # and insert the extracted path into the sys.path
+        setup_module_utils()
 
         if len(sys.argv) == 2:
             exitcode = debug(sys.argv[1], zipped_mod, ANSIBALLZ_PARAMS)
@@ -564,6 +591,34 @@ def _is_binary(b_module_data):
     return bool(start.translate(None, textchars))
 
 
+def _zip_folder(folder_path, zip_file=None):
+    contents = os.walk(folder_path)
+    do_return = False
+    try:
+        if zip_file is None:
+            zipoutput = BytesIO()
+            zip_file = zipfile.ZipFile(zipoutput, 'w', zipfile.ZIP_DEFLATED)
+            do_return = True
+        for root, folders, files in contents:
+            for folder_name in folders:
+                _zip_folder(folder_name, zip_file)
+            for file_name in files:
+                _, ext = os.path.splitext(file_name)
+                if ext == '.py':
+                    absolute_path = os.path.join(root, file_name)
+                    relative_path = absolute_path.replace(_MODULE_UTILS_PATH, 'module_utils')
+                    zip_file.write(absolute_path, relative_path)
+    except Exception as e:
+        raise AnsibleError(to_text(e))
+    finally:
+        if do_return:
+            zip_file.close()
+
+    if do_return:
+        return base64.b64encode(zipoutput.getvalue())
+    else:
+        return None
+
 def _find_module_utils(module_name, b_module_data, module_path, module_args, task_vars, templar, module_compression, async_timeout, become,
                        become_method, become_user, become_password, become_flags, environment):
     """
@@ -626,11 +681,12 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
         lookup_path = os.path.join(C.DEFAULT_LOCAL_TMP, 'ansiballz_cache')
         cached_module_filename = os.path.join(lookup_path, "%s-%s" % (module_name, module_compression))
 
-        zipdata = None
+        module_data = None
+        modutils_data = None
         # Optimization -- don't lock if the module has already been cached
         if os.path.exists(cached_module_filename):
             display.debug('ANSIBALLZ: using cached module: %s' % cached_module_filename)
-            zipdata = open(cached_module_filename, 'rb').read()
+            module_data = open(cached_module_filename, 'rb').read()
         else:
             if module_name in action_write_locks.action_write_locks:
                 display.debug('ANSIBALLZ: Using lock for %s' % module_name)
@@ -646,6 +702,27 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
             display.debug('ANSIBALLZ: Acquiring lock')
             with lock:
                 display.debug('ANSIBALLZ: Lock acquired: %s' % id(lock))
+
+                global mod_utils_paths
+                global mod_utils_update_time
+
+                if mod_utils_update_time != module_utils_loader.last_update:
+                    needs_rebuild = False
+                    for mod_util_path in module_utils_loader.all(path_only=True):
+                        f_hash = secure_hash(mod_util_path)
+                        if mod_util_path not in mod_utils_paths or mod_utils_paths[mod_util_path] != f_hash:
+                            mod_utils_paths[mod_util_path] = f_hash
+                            needs_rebuild = True
+
+                    modutils_cache_path = os.path.expanduser('~/.ansible/cached_mod_utils.zip')
+                    if not os.path.exists(modutils_cache_path) or needs_rebuild:
+                        modutils_data = to_text(_zip_folder(_MODULE_UTILS_PATH), errors='surrogate_or_strict')
+                        with open(modutils_cache_path, mode='wt') as mod_utils_cache:
+                            mod_utils_cache.write(modutils_data)
+                else:
+                    with open(modutils_cache_path, mode='rt') as mod_utils_cache:
+                        modutils_data = mod_utils_cache.read()
+
                 # Check that no other process has created this while we were
                 # waiting for the lock
                 if not os.path.exists(cached_module_filename):
@@ -659,14 +736,9 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
                                 b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n__version__="' +
                                 to_bytes(__version__) + b'"\n__author__="' +
                                 to_bytes(__author__) + b'"\n')
-                    zf.writestr('ansible/module_utils/__init__.py', b'from pkgutil import extend_path\n__path__=extend_path(__path__,__name__)\n')
-
                     zf.writestr('__main__.py', b_module_data)
-
-                    py_module_cache = {('__init__',): (b'', '[builtin]')}
-                    recursive_finder(module_name, b_module_data, py_module_names, py_module_cache, zf)
                     zf.close()
-                    zipdata = base64.b64encode(zipoutput.getvalue())
+                    module_data = base64.b64encode(zipoutput.getvalue())
 
                     # Write the assembled module to a temp file (write to temp
                     # so that no one looking for the file reads a partially
@@ -677,7 +749,7 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
                         os.makedirs(lookup_path)
                     display.debug('ANSIBALLZ: Writing module')
                     with open(cached_module_filename + '-part', 'wb') as f:
-                        f.write(zipdata)
+                        f.write(module_data)
 
                     # Rename the file into its final position in the cache so
                     # future users of this module can read it off the
@@ -686,17 +758,17 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
                     os.rename(cached_module_filename + '-part', cached_module_filename)
                     display.debug('ANSIBALLZ: Done creating module')
 
-            if zipdata is None:
+            if module_data is None:
                 display.debug('ANSIBALLZ: Reading module after lock')
                 # Another process wrote the file while we were waiting for
                 # the write lock.  Go ahead and read the data from disk
                 # instead of re-creating it.
                 try:
-                    zipdata = open(cached_module_filename, 'rb').read()
+                    module_data = open(cached_module_filename, 'rb').read()
                 except IOError:
                     raise AnsibleError('A different worker process failed to create module file. '
                                        'Look at traceback for that process for debugging information.')
-        zipdata = to_text(zipdata, errors='surrogate_or_strict')
+        module_data = to_text(module_data, errors='surrogate_or_strict')
 
         shebang, interpreter = _get_shebang(u'/usr/bin/python', task_vars, templar)
         if shebang is None:
@@ -709,7 +781,8 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
 
         now = datetime.datetime.utcnow()
         output.write(to_bytes(ACTIVE_ANSIBALLZ_TEMPLATE % dict(
-            zipdata=zipdata,
+            module_data=module_data,
+            modutils_data=modutils_data,
             ansible_module=module_name,
             params=python_repred_params,
             shebang=shebang,
