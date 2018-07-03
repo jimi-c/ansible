@@ -192,7 +192,7 @@ def ansiballz_setup(modfile, modname, interpreters):
     debug_dir = lines[1].strip()
 
     argsfile = os.path.join(debug_dir, 'args')
-    modfile = os.path.join(debug_dir, 'ansible_module_%s.py' % modname)
+    modfile = os.path.join(debug_dir, '__main__.py')
 
     print("* ansiballz module detected; extracted module source to: %s" % debug_dir)
     return modfile, argsfile
