@@ -176,6 +176,10 @@ def invoke_module(modlib_path, json_params):
     importer = zipimport.zipimporter(modlib_path)
     importer.load_module('__main__')
 
+    # Ansible modules must exit themselves
+    print('{"msg": "New-style module did not handle its own exit", "failed": true}')
+    sys.exit(1)
+
 def debug(command, zipped_mod, json_params):
     # The code here normally doesn't run.  It's only used for debugging on the
     # remote machine.
@@ -212,7 +216,11 @@ def debug(command, zipped_mod, json_params):
     # Okay to use __file__ here because we're running from a kept file
     basedir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'debug_dir')
     args_path = os.path.join(basedir, 'args')
-    script_path = os.path.join(basedir, 'ansible_module_%(ansible_module)s.py')
+    script_path = os.path.join(basedir, '__main__.py')
+
+    if command == 'excommunicate':
+        print('The excommunicate debug command is deprecated and will be removed in 2.11.  Use execute instead.')
+        command = 'execute'
 
     if command == 'explode':
         # transform the ZIPDATA into an exploded directory of code and then
@@ -248,51 +256,27 @@ def debug(command, zipped_mod, json_params):
         # Execute the exploded code instead of executing the module from the
         # embedded ZIPDATA.  This allows people to easily run their modified
         # code on the remote machine to see how changes will affect it.
-        # This differs slightly from default Ansible execution of Python modules
-        # as it passes the arguments to the module via a file instead of stdin.
 
         # Set pythonpath to the debug dir
-        pythonpath = os.environ.get('PYTHONPATH')
-        if pythonpath:
-            os.environ['PYTHONPATH'] = ':'.join((basedir, pythonpath))
-        else:
-            os.environ['PYTHONPATH'] = basedir
-
-        p = subprocess.Popen([%(interpreter)s, script_path, args_path],
-                env=os.environ, shell=False, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, stdin=subprocess.PIPE)
-        (stdout, stderr) = p.communicate()
-
-        if not isinstance(stderr, (bytes, unicode)):
-            stderr = stderr.read()
-        if not isinstance(stdout, (bytes, unicode)):
-            stdout = stdout.read()
-        if PY3:
-            sys.stderr.buffer.write(stderr)
-            sys.stdout.buffer.write(stdout)
-        else:
-            sys.stderr.write(stderr)
-            sys.stdout.write(stdout)
-        return p.returncode
-
-    elif command == 'excommunicate':
-        # This attempts to run the module in-process (by importing a main
-        # function and then calling it).  It is not the way ansible generally
-        # invokes the module so it won't work in every case.  It is here to
-        # aid certain debuggers which work better when the code doesn't change
-        # from one process to another but there may be problems that occur
-        # when using this that are only artifacts of how we're invoking here,
-        # not actual bugs (as they don't affect the real way that we invoke
-        # ansible modules)
-
-        # stub the args and python path
-        sys.argv = ['%(ansible_module)s', args_path]
         sys.path.insert(0, basedir)
 
-        from ansible_module_%(ansible_module)s import main
-        main()
-        print('WARNING: Module returned to wrapper instead of exiting')
+        # read in the args file which the user may have modified
+        with open(args_path, 'rb') as f:
+            json_params = f.read()
+
+        # Monkeypatch the parameters into basic
+        from ansible.module_utils import basic
+        basic._ANSIBLE_ARGS = json_params
+
+        # Run the module!  By importing it as '__main__', it thinks it is executing as a script
+        import imp
+        with open(script_path, 'r') as f:
+            importer = imp.load_module('__main__', f, script_path, ('.py', 'r', imp.PY_SOURCE))
+
+        # Ansible modules must exit themselves
+        print('{"msg": "New-style module did not handle its own exit", "failed": true}')
         sys.exit(1)
+
     else:
         print('WARNING: Unknown debug command.  Doing nothing.')
         exitcode = 0
