@@ -156,7 +156,7 @@ def boilerplate_module(modfile, args, interpreters, check, destfile):
         task_vars=task_vars
     )
 
-    if module_style == 'new' and 'ANSIBALLZ_WRAPPER = True' in to_native(module_data):
+    if module_style == 'new' and '_ANSIBALLZ_WRAPPER = True' in to_native(module_data):
         module_style = 'ansiballz'
 
     modfile2_path = os.path.expanduser(destfile)
