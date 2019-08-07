@@ -146,14 +146,12 @@ class StrategyModule(StrategyBase):
                             # we don't care if it just shows the raw name
                             display.debug("templating failed for some reason", host=host_name)
 
-                        run_once = templar.template(task.run_once) or action and getattr(action, 'BYPASS_HOST_LOOP', False)
-                        if run_once:
-                            if action and getattr(action, 'BYPASS_HOST_LOOP', False):
-                                raise AnsibleError("The '%s' module bypasses the host loop, which is currently not supported in the free strategy "
-                                                   "and would instead execute for every host in the inventory list." % task.action, obj=task._ds)
-                            else:
-                                display.warning("Using run_once with the free strategy is not currently supported. This task will still be "
-                                                "executed for every host in the inventory list.")
+                        if action and getattr(action, 'BYPASS_HOST_LOOP', False):
+                            raise AnsibleError("The '%s' module bypasses the host loop, which is currently not supported in the free strategy "
+                                               "and would instead execute for every host in the inventory list." % task.action, obj=task._ds)
+                        elif task.run:
+                            display.warning("Using `run` with the free strategy is not currently supported. This task will still be "
+                                            "executed for every host in the inventory list regardless of the options set for `run`.")
 
                         # check to see if this task should be skipped, due to it being a member of a
                         # role which has already run (and whether that role allows duplicate execution)

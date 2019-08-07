@@ -606,6 +606,7 @@ class Base(FieldAttributeBase):
     # flags and misc. settings
     _environment = FieldAttribute(isa='list', extend=True, prepend=True)
     _no_log = FieldAttribute(isa='bool')
+    _run = FieldAttribute(isa='dict')
     _run_once = FieldAttribute(isa='bool')
     _ignore_errors = FieldAttribute(isa='bool')
     _ignore_unreachable = FieldAttribute(isa='bool')
@@ -624,4 +625,54 @@ class Base(FieldAttributeBase):
     _become_exe = FieldAttribute(isa='string', default=context.cliargs_deferred_get('become_exe'))
 
     # used to hold sudo/su stuff
-    DEPRECATED_ATTRIBUTES = []
+    DEPRECATED_ATTRIBUTES = ['run_once',]
+
+    def preprocess_data(self, ds):
+        ds = super(Base, self).preprocess_data(ds)
+        # run_once is deprecated, convert it to a default `run` dictionary
+        if 'run_once' in ds:
+            if 'run' in ds:
+                raise AnsibleParserError("The 'run' keyword cannot be specified with 'run_once'.", obj=ds)
+            else:
+                # FIXME: add documentation page and correct link
+                display.deprecated(
+                    'The `run_once` keyword has been deprecated. Going forward you should use the `run` keyword. '
+                    'Please see https://docs.ansible.com/..../ for more information',
+                    version='2.13'
+                )
+
+                ds.pop('run_once', None)
+                # FIXME: pull these defaults from config/settings?
+                ds['run'] = {
+                    'target': 'first',
+                    'facts': 'all',
+                    'notify': 'runhost',
+                }
+        return ds
+
+    def _load_run(self, attr, ds):
+        ''' loads the 'run' value, which is a dict with a fixed set of keys allowed '''
+        if not isinstance(ds, dict):
+            raise AnsibleParserError("The 'run' keyword must be specified as a dictionary", obj=ds)
+
+        allowed_subfields = {
+            'target': ['first', 'first_match', 'random', 'last'],
+            'facts': ['all', 'runhost', 'nonrun'], 
+            'notify': ['runhost', 'all', 'nonrun'],
+        }
+
+        print("run ds is: %s" % (ds,))
+        # verify there are no 
+        if not set(ds.keys()).issubset(set(allowed_subfields.keys())):
+            raise AnsibleParserError("The 'run' keyword contains invalid keys. Valid keys are: %s" % (", ".join(allowed_subfields.keys()),), obj=ds)
+
+        new_ds = ds.copy()
+        for subfield in allowed_subfields:
+            if subfield in new_ds:
+                value = new_ds[subfield]
+                if isinstance(value, string_types):
+                    value = value.lower()
+                if value not in allowed_subfields[subfield]:
+                    raise AnsibleParserError("The 'run' subfield '%s' has an invalid value (%s). Valid values for this field are: %s" % (subfield, value, ", ".join(allowed_subfields[subfield])), obj=ds)
+
+        return new_ds

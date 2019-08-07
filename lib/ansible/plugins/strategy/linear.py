@@ -284,7 +284,12 @@ class StrategyModule(StrategyBase):
                         templar = Templar(loader=self._loader, variables=task_vars)
                         display.debug("done getting variables")
 
-                        run_once = templar.template(task.run_once) or action and getattr(action, 'BYPASS_HOST_LOOP', False)
+                        if action and getattr(action, 'BYPASS_HOST_LOOP', False):
+                            run_once = True
+                        else:
+                            run = templar.template(task.run, task_vars)
+                            if 'target' in run and run['target'] != 'all':
+                                run_once = True
 
                         if (task.any_errors_fatal or run_once) and not task.ignore_errors:
                             any_errors_fatal = True

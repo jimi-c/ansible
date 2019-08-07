@@ -23,6 +23,7 @@ import cmd
 import functools
 import os
 import pprint
+import random
 import sys
 import threading
 import time
@@ -345,12 +346,25 @@ class StrategyBase:
             return
         display.debug("exiting _queue_task() for %s/%s" % (host.name, task.action))
 
-    def get_task_hosts(self, iterator, task_host, task):
-        if task.run_once:
+    def get_task_hosts(self, iterator, task_host, task, which=None):
+        if task.run:
+            which_value = task.run.get(which, None)
+            if which_value == 'runhost':
+                return [task_host.name]
+   
             host_list = [host for host in self._hosts_cache if host not in self._tqm._unreachable_hosts]
+            if not which_value or which_value == 'all':
+                return host_list
+            elif which_value == 'first':
+                return [host_list[0]]
+            elif which_value == 'last':
+                return [host_list[-1]]
+            elif which_value == 'random':
+                return [random.choice(host_list)]
+            else:
+                return host_list
         else:
-            host_list = [task_host.name]
-        return host_list
+            return [task_host.name]
 
     def get_delegated_hosts(self, result, task):
         host_name = result.get('_ansible_delegated_vars', {}).get('ansible_delegated_host', None)
@@ -445,7 +459,7 @@ class StrategyBase:
                 continue
 
             if original_task.register:
-                host_list = self.get_task_hosts(iterator, original_host, original_task)
+                host_list = self.get_task_hosts(iterator, original_host, original_task, which=None)
 
                 clean_copy = strip_internal_keys(module_response_deepcopy(task_result._result))
                 if 'invocation' in clean_copy:
@@ -526,6 +540,7 @@ class StrategyBase:
                             # does not detect when sub-objects within the proxy are modified.
                             # So, per the docs, we reassign the list so the proxy picks up and
                             # notifies all other threads
+                            host_list = self.get_task_hosts(iterator, original_host, original_task, which='notify')
                             for handler_name in result_item['_ansible_notify']:
                                 found = False
                                 # Find the handler using the above helper.  First we look up the
@@ -535,8 +550,10 @@ class StrategyBase:
                                 target_handler = search_handler_blocks_by_name(handler_name, iterator._play.handlers)
                                 if target_handler is not None:
                                     found = True
-                                    if target_handler.notify_host(original_host):
-                                        self._tqm.send_callback('v2_playbook_on_notify', target_handler, original_host)
+                                    for notifying_host in host_list:
+                                        notifying_host = get_original_host(notifying_host)
+                                        if target_handler.notify_host(notifying_host):
+                                            self._tqm.send_callback('v2_playbook_on_notify', target_handler, notifying_host)
 
                                 for listening_handler_block in iterator._play.handlers:
                                     for listening_handler in listening_handler_block.block:
@@ -550,8 +567,10 @@ class StrategyBase:
                                         else:
                                             found = True
 
-                                        if listening_handler.notify_host(original_host):
-                                            self._tqm.send_callback('v2_playbook_on_notify', listening_handler, original_host)
+                                        for notifying_host in host_list:
+                                            notifying_host = get_original_host(notifying_host)
+                                            if listening_handler.notify_host(notifying_host):
+                                                self._tqm.send_callback('v2_playbook_on_notify', listening_handler, notifying_host)
 
                                 # and if none were found, then we raise an error
                                 if not found:
@@ -577,7 +596,7 @@ class StrategyBase:
                         if original_task.delegate_to is not None and original_task.delegate_facts:
                             host_list = self.get_delegated_hosts(result_item, original_task)
                         else:
-                            host_list = self.get_task_hosts(iterator, original_host, original_task)
+                            host_list = self.get_task_hosts(iterator, original_host, original_task, which='facts')
 
                         if original_task.action == 'include_vars':
                             for (var_name, var_value) in iteritems(result_item['ansible_facts']):
@@ -601,7 +620,7 @@ class StrategyBase:
                     if 'ansible_stats' in result_item and 'data' in result_item['ansible_stats'] and result_item['ansible_stats']['data']:
 
                         if 'per_host' not in result_item['ansible_stats'] or result_item['ansible_stats']['per_host']:
-                            host_list = self.get_task_hosts(iterator, original_host, original_task)
+                            host_list = self.get_task_hosts(iterator, original_host, original_task, which=None)
                         else:
                             host_list = [None]
 
