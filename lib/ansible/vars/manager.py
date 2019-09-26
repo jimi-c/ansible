@@ -47,6 +47,8 @@ from ansible.utils.vars import combine_vars, load_extra_vars, load_options_vars
 from ansible.utils.unsafe_proxy import wrap_var
 from ansible.vars.clean import namespace_facts, clean_facts
 
+from ansible.devel.cprofile_decorator import cprofile_func
+
 display = Display()
 
 
@@ -229,6 +231,7 @@ class VariableManager:
                 return data
 
             # internal fuctions that actually do the work
+            @cprofile_func()
             def _plugins_inventory(entities):
                 ''' merges all entities by inventory source '''
                 data = {}
