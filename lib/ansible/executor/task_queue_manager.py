@@ -19,13 +19,14 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import asyncio
 import os
 import sys
 import tempfile
 import threading
 import time
 import typing as t
-import multiprocessing.queues
+#import multiprocessing.queues
 
 from ansible import constants as C
 from ansible import context
@@ -77,32 +78,32 @@ class PromptSend:
     complete_input: t.Iterable[bytes] = None
 
 
-class FinalQueue(multiprocessing.queues.SimpleQueue):
+class FinalQueue(asyncio.Queue):
     def __init__(self, *args, **kwargs):
-        kwargs['ctx'] = multiprocessing_context
+        #kwargs['ctx'] = multiprocessing_context
         super().__init__(*args, **kwargs)
 
-    def send_callback(self, method_name, *args, **kwargs):
-        self.put(
+    async def send_callback(self, method_name, *args, **kwargs):
+        await self.put(
             CallbackSend(method_name, *args, **kwargs),
         )
 
-    def send_task_result(self, *args, **kwargs):
+    async def send_task_result(self, *args, **kwargs):
         if isinstance(args[0], TaskResult):
             tr = args[0]
         else:
             tr = TaskResult(*args, **kwargs)
-        self.put(
+        await self.put(
             tr,
         )
 
-    def send_display(self, method, *args, **kwargs):
-        self.put(
+    async def send_display(self, method, *args, **kwargs):
+        await self.put(
             DisplaySend(method, *args, **kwargs),
         )
 
-    def send_prompt(self, **kwargs):
-        self.put(
+    async def send_prompt(self, **kwargs):
+        await self.put(
             PromptSend(**kwargs),
         )
 
@@ -270,7 +271,7 @@ class TaskQueueManager:
 
         self._callbacks_loaded = True
 
-    def run(self, play):
+    async def run(self, play):
         '''
         Iterates over the roles/tasks in a play, using the given (or default)
         strategy for queueing tasks. The default is the linear strategy, which
@@ -345,9 +346,16 @@ class TaskQueueManager:
 
         # and run the play using the strategy and cleanup on way out
         try:
-            play_return = strategy.run(iterator, play_context)
+            print("here we go with the strategy run...")
+            play_return = await strategy.run(iterator, play_context)
+        except Exception as e:
+            print("got an exception running the strategy: ", e)
+            from traceback import format_tb
+            from sys import exc_info
+            print('Callback Exception: \n' + ' '.join(format_tb(exc_info()[2])))
         finally:
-            strategy.cleanup()
+            print("***************** IN FINALLY FOR STRAT RUN **********************")
+            await strategy.cleanup()
             self._cleanup_processes()
 
         # now re-save the hosts that failed from the iterator to our internal list
@@ -362,7 +370,7 @@ class TaskQueueManager:
     def cleanup(self):
         display.debug("RUNNING CLEANUP")
         self.terminate()
-        self._final_q.close()
+        #self._final_q.close()
         self._cleanup_processes()
         # We no longer flush on every write in ``Display.display``
         # just ensure we've flushed during cleanup
@@ -370,22 +378,23 @@ class TaskQueueManager:
         sys.stderr.flush()
 
     def _cleanup_processes(self):
-        if hasattr(self, '_workers'):
-            for attempts_remaining in range(C.WORKER_SHUTDOWN_POLL_COUNT - 1, -1, -1):
-                if not any(worker_prc and worker_prc.is_alive() for worker_prc in self._workers):
-                    break
-
-                if attempts_remaining:
-                    time.sleep(C.WORKER_SHUTDOWN_POLL_DELAY)
-                else:
-                    display.warning('One or more worker processes are still running and will be terminated.')
-
-            for worker_prc in self._workers:
-                if worker_prc and worker_prc.is_alive():
-                    try:
-                        worker_prc.terminate()
-                    except AttributeError:
-                        pass
+        #if hasattr(self, '_workers'):
+        #    for attempts_remaining in range(C.WORKER_SHUTDOWN_POLL_COUNT - 1, -1, -1):
+        #        if not any(worker_prc and worker_prc.is_alive() for worker_prc in self._workers):
+        #            break
+        # 
+        #        if attempts_remaining:
+        #            time.sleep(C.WORKER_SHUTDOWN_POLL_DELAY)
+        #        else:
+        #            display.warning('One or more worker processes are still running and will be terminated.')
+        # 
+        #    for worker_prc in self._workers:
+        #        if worker_prc and worker_prc.is_alive():
+        #            try:
+        #                worker_prc.terminate()
+        #            except AttributeError:
+        #                pass
+        pass
 
     def clear_failed_hosts(self):
         self._failed_hosts = dict()

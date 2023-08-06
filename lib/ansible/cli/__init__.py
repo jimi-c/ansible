@@ -630,7 +630,7 @@ class CLI(ABC):
         return to_unsafe_text(secret)
 
     @classmethod
-    def cli_executor(cls, args=None):
+    async def cli_executor(cls, args=None):
         if args is None:
             args = sys.argv
 
@@ -656,7 +656,7 @@ class CLI(ABC):
                 exit_code = 6
             else:
                 cli = cls(args)
-                exit_code = cli.run()
+                exit_code = await cli.run()
 
         except AnsibleOptionsError as e:
             cli.parser.print_help()

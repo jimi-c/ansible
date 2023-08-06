@@ -1048,7 +1048,7 @@ def _add_module_to_zip(zf, remote_module_fqn, b_module_data):
         zf.writestr(package_path, b'')
 
 
-def _find_module_utils(module_name, b_module_data, module_path, module_args, task_vars, templar, module_compression, async_timeout, become,
+async def _find_module_utils(module_name, b_module_data, module_path, module_args, task_vars, templar, module_compression, async_timeout, become,
                        become_method, become_user, become_password, become_flags, environment, remote_is_local=False):
     """
     Given the source of the module, convert it to a Jinja2 template to insert
@@ -1144,7 +1144,7 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
                 lock = action_write_locks.action_write_locks[None]
 
             display.debug('ANSIBALLZ: Acquiring lock')
-            with lock:
+            async with lock:
                 display.debug('ANSIBALLZ: Lock acquired: %s' % id(lock))
                 # Check that no other process has created this while we were
                 # waiting for the lock

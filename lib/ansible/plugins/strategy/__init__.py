@@ -19,18 +19,19 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import asyncio
 import cmd
 import functools
 import os
 import pprint
-import queue
+#import queue
 import sys
 import threading
 import time
 import typing as t
 
 from collections import deque
-from multiprocessing import Lock
+from multiprocessing import Lock as MPLock
 
 from jinja2.exceptions import UndefinedError
 
@@ -39,7 +40,7 @@ from ansible import context
 from ansible.errors import AnsibleError, AnsibleFileNotFound, AnsibleUndefinedVariable, AnsibleParserError
 from ansible.executor import action_write_locks
 from ansible.executor.play_iterator import IteratingStates, PlayIterator
-from ansible.executor.process.worker import WorkerProcess
+from ansible.executor.process.async_worker import run_async_worker
 from ansible.executor.task_result import TaskResult
 from ansible.executor.task_queue_manager import CallbackSend, DisplaySend, PromptSend
 from ansible.module_utils.six import string_types
@@ -109,10 +110,14 @@ def _get_item_vars(result, task):
     return item_vars
 
 
-def results_thread_main(strategy):
+async def results_thread_main(strategy):
+    print("********************************** starting results thread")
     while True:
         try:
-            result = strategy._final_q.get()
+            print("************************************ waiting for a result in result_thread")
+            result = await strategy._final_q.get()
+            print("got a result in results thread")
+            print("result:", result)
             if isinstance(result, StrategySentinel):
                 break
             elif isinstance(result, DisplaySend):
@@ -150,8 +155,12 @@ def results_thread_main(strategy):
                 display.warning('Received an invalid object (%s) in the result queue: %r' % (type(result), result))
         except (IOError, EOFError):
             break
-        except queue.Empty:
-            pass
+        except Exception as e:
+            print("got an exception waiting for result in thread:", e)
+            await asyncio.sleep(1)
+        #except queue.Empty:
+        #    pass
+    print("well shit we exited the results worker")
 
 
 def debug_closure(func):
@@ -204,7 +213,7 @@ def debug_closure(func):
                     self._tqm._stats.decrement('ok', host.name)
 
                     # redo
-                    self._queue_task(host, task, task_vars, play_context)
+                    asyncio.create_task(self._queue_task(host, task, task_vars, play_context))
 
                     _processed_results.extend(debug_closure(func)(self, iterator, one_pass))
                     break
@@ -260,14 +269,19 @@ class StrategyBase:
         self._blocked_hosts = dict()
 
         self._results = deque()
-        self._results_lock = threading.Condition(threading.Lock())
+        #self._results_lock = threading.Condition(threading.Lock())
+        self._results_lock = asyncio.Condition(asyncio.Lock())
 
         self._worker_queues = dict()
 
         # create the result processing thread for reading results in the background
-        self._results_thread = threading.Thread(target=results_thread_main, args=(self,))
-        self._results_thread.daemon = True
-        self._results_thread.start()
+        #self._results_thread = threading.Thread(target=results_thread_main, args=(self,))
+        #self._results_thread.daemon = True
+        #self._results_thread.start()
+        print("creating results thread")
+        self._results_thread = asyncio.create_task(results_thread_main(self))
+        self._results_thread.print_stack()
+        print("done creating results thread:", self._results_thread)
 
         # holds the list of active (persistent) connections to be shutdown at
         # play completion
@@ -296,7 +310,8 @@ class StrategyBase:
         self._hosts_cache_all = [h.name for h in self._inventory.get_hosts(pattern=_pattern, ignore_restrictions=True)]
         self._hosts_cache = [h.name for h in self._inventory.get_hosts(play.hosts, order=play.order)]
 
-    def cleanup(self):
+    async def cleanup(self):
+        print("calling cleanup???")
         # close active persistent connections
         for sock in self._active_connections.values():
             try:
@@ -305,8 +320,10 @@ class StrategyBase:
             except ConnectionError as e:
                 # most likely socket is already closed
                 display.debug("got an error while closing persistent connection: %s" % e)
-        self._final_q.put(_sentinel)
-        self._results_thread.join()
+        # put the sentinel on the queue so the results thread exists
+        # then await the thread to make sure it exited cleanly
+        await self._final_q.put(_sentinel)
+        await self._results_thread
 
     def run(self, iterator, play_context, result=0):
         # execute one more pass through the iterator without peeking, to
@@ -348,7 +365,7 @@ class StrategyBase:
         vars['ansible_current_hosts'] = self.get_hosts_remaining(play)
         vars['ansible_failed_hosts'] = self.get_failed_hosts(play)
 
-    def _queue_task(self, host, task, task_vars, play_context):
+    async def _queue_task(self, host, task, task_vars, play_context):
         ''' handles queueing the task up to be sent to a worker '''
 
         display.debug("entering _queue_task() for %s/%s" % (host.name, task.action))
@@ -366,7 +383,7 @@ class StrategyBase:
 
         if task.action not in action_write_locks.action_write_locks:
             display.debug('Creating lock for %s' % task.action)
-            action_write_locks.action_write_locks[task.action] = Lock()
+            action_write_locks.action_write_locks[task.action] = asyncio.Lock()
 
         # create a templar and template things we need later for the queuing process
         templar = Templar(loader=self._loader, variables=task_vars)
@@ -392,47 +409,30 @@ class StrategyBase:
                         display.debug("task: %s, throttle: %d" % (task.get_name(), throttle))
                         rewind_point = throttle
 
-            queued = False
-            starting_worker = self._cur_worker
             while True:
-                if self._cur_worker >= rewind_point:
-                    self._cur_worker = 0
-
-                worker_prc = self._workers[self._cur_worker]
-                if worker_prc is None or not worker_prc.is_alive():
-                    self._queued_task_cache[(host.name, task._uuid)] = {
-                        'host': host,
-                        'task': task,
-                        'task_vars': task_vars,
-                        'play_context': play_context
-                    }
-
-                    # Pass WorkerProcess its strategy worker number so it can send an identifier along with intra-task requests
-                    worker_prc = WorkerProcess(
-                        self._final_q, task_vars, host, task, play_context, self._loader, self._variable_manager, plugin_loader, self._cur_worker,
+                print("pending results:", self._pending_results, ", num workers:", len(self._workers))
+                
+                if self._pending_results < min(rewind_point, len(self._workers)):
+                    task = asyncio.create_task(
+                        run_async_worker(self._final_q, task_vars, host, task, play_context, self._loader, self._variable_manager, plugin_loader, self._cur_worker)
                     )
-                    self._workers[self._cur_worker] = worker_prc
-                    self._tqm.send_callback('v2_runner_on_start', host, task)
-                    worker_prc.start()
-                    display.debug("worker is %d (out of %d available)" % (self._cur_worker + 1, len(self._workers)))
-                    queued = True
-
-                self._cur_worker += 1
-
-                if self._cur_worker >= rewind_point:
-                    self._cur_worker = 0
-
-                if queued:
+                    print("done setting up async task")
+                    self._pending_results += 1
+                    print("pending results is now", self._pending_results)
+                    print("queued task")
                     break
-                elif self._cur_worker == starting_worker:
-                    time.sleep(0.0001)
+                else:
+                    await asyncio.sleep(1)
+            print("done with while loop")
 
-            self._pending_results += 1
         except (EOFError, IOError, AssertionError) as e:
             # most likely an abort
+            print("wtf")
             display.debug("got an error while queuing: %s" % e)
             return
-        display.debug("exiting _queue_task() for %s/%s" % (host.name, task.action))
+        #display.debug("exiting _queue_task() for %s/%s" % (host.name, task.action))
+        print("exiting queue task")
+        return
 
     def get_task_hosts(self, iterator, task_host, task):
         if task.run_once:
@@ -570,13 +570,20 @@ class StrategyBase:
 
         cur_pass = 0
         while True:
+            print("getting results")
             try:
-                self._results_lock.acquire()
+                #self._results_lock.acquire()
                 task_result = self._results.popleft()
             except IndexError:
-                break
+                print("- failed, no results to pop")
+                time.sleep(1)
+                continue
+            except Execption as e:
+                print("- failed to pop:", e)
             finally:
-                self._results_lock.release()
+                #self._results_lock.release()
+                pass
+            print("done getting results")
 
             original_host = task_result._host
             original_task = task_result._task
@@ -816,10 +823,12 @@ class StrategyBase:
         ret_results = []
 
         display.debug("waiting for pending results...")
+        print("in waiting for results")
         while self._pending_results > 0 and not self._tqm._terminated:
+            print("we are waiting on %d results" % (self._pending_results,))
 
-            if self._tqm.has_dead_workers():
-                raise AnsibleError("A worker was found in a dead state")
+            #if self._tqm.has_dead_workers():
+            #    raise AnsibleError("A worker was found in a dead state")
 
             results = self._process_pending_results(iterator)
             ret_results.extend(results)
@@ -828,6 +837,7 @@ class StrategyBase:
 
         display.debug("no more pending results, returning what we have")
 
+        print("exiting waiting for results")
         return ret_results
 
     def _copy_included_file(self, included_file):
@@ -950,6 +960,7 @@ class StrategyBase:
         if meta_action == 'noop':
             msg = "noop"
         elif meta_action == 'flush_handlers':
+            print("in flush handlers")
             if _evaluate_conditional(target_host):
                 host_state = iterator.get_state_for_host(target_host.name)
                 # actually notify proper handlers based on all notifications up to this point
@@ -970,6 +981,7 @@ class StrategyBase:
             else:
                 skipped = True
                 skip_reason += ', not running handlers for %s' % target_host.name
+            print("done with flush handlers")
         elif meta_action == 'refresh_inventory':
             self._inventory.refresh_inventory()
             self._set_hosts_cache(iterator._play)

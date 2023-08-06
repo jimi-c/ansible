@@ -10,6 +10,7 @@ __metaclass__ = type
 # ansible.cli needs to be imported first, to ensure the source bin/* scripts run that code first
 from ansible.cli import CLI
 
+import asyncio
 import os
 import stat
 
@@ -85,7 +86,7 @@ class PlaybookCLI(CLI):
 
         return options
 
-    def run(self):
+    async def run(self):
 
         super(PlaybookCLI, self).run()
 
@@ -153,7 +154,7 @@ class PlaybookCLI(CLI):
                                 variable_manager=variable_manager, loader=loader,
                                 passwords=passwords)
 
-        results = pbex.run()
+        results = await pbex.run()
 
         if isinstance(results, list):
             for p in results:
@@ -236,9 +237,9 @@ class PlaybookCLI(CLI):
             variable_manager.clear_facts(hostname)
 
 
-def main(args=None):
-    PlaybookCLI.cli_executor(args)
+async def main(args=None):
+    await PlaybookCLI.cli_executor(args)
 
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

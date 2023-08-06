@@ -124,7 +124,7 @@ class StrategyModule(StrategyBase):
 
         return host_tasks
 
-    def run(self, iterator, play_context):
+    async def run(self, iterator, play_context):
         '''
         The linear strategy is simple - get the next task and queue
         it for all hosts, then wait for the queue to drain before
@@ -137,6 +137,7 @@ class StrategyModule(StrategyBase):
 
         self._set_hosts_cache(iterator._play)
 
+        print("starting main loop")
         while work_to_do and not self._tqm._terminated:
 
             try:
@@ -149,6 +150,7 @@ class StrategyModule(StrategyBase):
                 work_to_do = False
 
                 host_tasks = self._get_next_task_lockstep(hosts_left, iterator)
+                print("got next host task")
 
                 # skip control
                 skip_rest = False
@@ -162,6 +164,7 @@ class StrategyModule(StrategyBase):
                     if not task:
                         continue
 
+                    print("doing", host, "for", task)
                     if self._tqm._terminated:
                         break
 
@@ -199,11 +202,13 @@ class StrategyModule(StrategyBase):
                     if task_action in C._ACTION_META:
                         # for the linear strategy, we run meta tasks just once and for
                         # all hosts currently being iterated over rather than one host
+                        print("---------------------------------------------")
                         results.extend(self._execute_meta(task, play_context, iterator, host))
                         if task.args.get('_raw_params', None) not in ('noop', 'reset_connection', 'end_host', 'role_complete', 'flush_handlers'):
                             run_once = True
                         if (task.any_errors_fatal or run_once) and not task.ignore_errors:
                             any_errors_fatal = True
+                        print("---------------------------------------------")
                     else:
                         # handle step if needed, skip meta actions as they are used internally
                         if self._step and choose_step:
@@ -239,22 +244,30 @@ class StrategyModule(StrategyBase):
                             display.debug("sending task start callback")
 
                         self._blocked_hosts[host.get_name()] = True
-                        self._queue_task(host, task, task_vars, play_context)
+                        print("queueing task")
+                        await self._queue_task(host, task, task_vars, play_context)
+                        print("task queued")
+
                         del task_vars
 
                     # if we're bypassing the host loop, break out now
                     if run_once:
                         break
 
-                    results.extend(self._process_pending_results(iterator, max_passes=max(1, int(len(self._tqm._workers) * 0.1))))
+                    print("waiting for results")
+                    #results.extend(self._process_pending_results(iterator, max_passes=max(1, int(len(self._tqm._workers) * 0.1))))
+                    print("done processing results")
 
                 # go to next host/task group
                 if skip_rest:
+                    print("((((((((((((((((((((((((((((((((((((((((((((((((((skipping rest))))))))))))))))))))))))))))))))))))))))))))))))))))))))))")
                     continue
 
+                print("waiting on pending results:", self._pending_results)
                 display.debug("done queuing things up, now waiting for results queue to drain")
                 if self._pending_results > 0:
                     results.extend(self._wait_on_pending_results(iterator))
+                print("done waiting on pending results")
 
                 self.update_active_connections(results)
 
@@ -402,4 +415,5 @@ class StrategyModule(StrategyBase):
         # run the base class run() method, which executes the cleanup function
         # and runs any outstanding handlers which have been triggered
 
+        print("running the super strategy run")
         return super(StrategyModule, self).run(iterator, play_context, result)

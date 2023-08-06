@@ -105,8 +105,9 @@ class TaskExecutor:
         returned as a dict.
         '''
 
+        print("doing TE run")
         display.debug("in run() - task %s" % self._task._uuid)
-
+        
         try:
             try:
                 items = self._get_loop_items()

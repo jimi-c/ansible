@@ -19,6 +19,7 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import asyncio
 import os
 
 from ansible import constants as C
@@ -75,7 +76,7 @@ class PlaybookExecutor:
         # therefore would be discarded after every task.
         set_default_transport()
 
-    def run(self):
+    async def run(self):
         '''
         Run the given playbook, based on the settings in the play which
         may limit the runs to serialized groups, etc.
@@ -187,10 +188,13 @@ class PlaybookExecutor:
                             self._inventory.restrict_to_hosts(batch)
                             # and run it...
                             try:
-                                result = self._tqm.run(play=play)
+                                tqm_task = asyncio.create_task(self._tqm.run(play=play))
+                                await tqm_task
+                                result = tqm_task.get_result()
                             except AnsibleEndPlay as e:
                                 result = e.result
                                 break
+                            print("we done")
 
                             # break the play if the result equals the special return code
                             if result & self._tqm.RUN_FAILED_BREAK_PLAY != 0:
