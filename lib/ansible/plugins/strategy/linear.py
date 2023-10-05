@@ -31,8 +31,10 @@ DOCUMENTATION = '''
     author: Ansible Core Team
 '''
 
+import copy
+
 from ansible import constants as C
-from ansible.errors import AnsibleError, AnsibleAssertionError, AnsibleParserError
+from ansible.errors import AnsibleError, AnsibleAssertionError, AnsibleParserError, AnsibleUndefinedVariable
 from ansible.executor.play_iterator import IteratingStates, FailedStates
 from ansible.module_utils.common.text.converters import to_text
 from ansible.playbook.handler import Handler
@@ -137,6 +139,11 @@ class StrategyModule(StrategyBase):
 
         self._set_hosts_cache(iterator._play)
 
+        # a dictionary to store loop eval errors, which may not be immediately
+        # fatal when first hit if the host is not later skipped. The key is the
+        # hostname, and the value is the raised exception
+        loop_eval_error = None
+
         while work_to_do and not self._tqm._terminated:
 
             try:
@@ -177,9 +184,11 @@ class StrategyModule(StrategyBase):
                             continue
 
                     display.debug("getting variables")
-                    task_vars = self._variable_manager.get_vars(play=iterator._play, host=host, task=task,
-                                                                _hosts=self._hosts_cache, _hosts_all=self._hosts_cache_all)
+                    task_vars = self._variable_manager.get_vars(
+                        play=iterator._play, host=host, task=task, _hosts=self._hosts_cache, _hosts_all=self._hosts_cache_all
+                    )
                     self.add_tqm_variables(task_vars, play=iterator._play)
+
                     templar = Templar(loader=self._loader, variables=task_vars)
                     display.debug("done getting variables")
 
@@ -196,56 +205,237 @@ class StrategyModule(StrategyBase):
                         # corresponding action plugin
                         action = None
 
-                    if task_action in C._ACTION_META:
-                        # for the linear strategy, we run meta tasks just once and for
-                        # all hosts currently being iterated over rather than one host
-                        results.extend(self._execute_meta(task, play_context, iterator, host))
-                        if task.args.get('_raw_params', None) not in ('noop', 'reset_connection', 'end_host', 'role_complete', 'flush_handlers'):
-                            run_once = True
-                        if (task.any_errors_fatal or run_once) and not task.ignore_errors:
-                            any_errors_fatal = True
-                    else:
-                        # handle step if needed, skip meta actions as they are used internally
-                        if self._step and choose_step:
-                            if self._take_step(task):
-                                choose_step = False
-                            else:
-                                skip_rest = True
-                                break
+                    #print("TASK ACTION:", task_action)
+                    # determine if this task should only run once, and if any errors are fatal
+                    run_once = templar.template(task.run_once) or action and getattr(action, 'BYPASS_HOST_LOOP', False)
+                    if (task.any_errors_fatal or run_once) and not task.ignore_errors:
+                        any_errors_fatal = True
 
-                        run_once = templar.template(task.run_once) or action and getattr(action, 'BYPASS_HOST_LOOP', False)
+                    # build list of loop items, if this task has a loop
+                    try:
+                        items = self._get_loop_items(task, templar, task_vars)
+                    except AnsibleUndefinedVariable as e:
+                        # save the error raised here for use later
+                        items = []
+                        loop_eval_error = e
 
-                        if (task.any_errors_fatal or run_once) and not task.ignore_errors:
-                            any_errors_fatal = True
+                    has_loop = False
+                    loop_control = None
+                    #print(items)
+                    if items is not None and len(items) > 0:
+                        has_loop = True
+                        loop_control = copy.deepcopy(task.loop_control)
+                        loop_control.post_validate(templar=templar)
 
-                        if not callback_sent:
-                            display.debug("sending task start callback, copying the task so we can template it temporarily")
-                            saved_name = task.name
-                            display.debug("done copying, going to template now")
+                    #print("ARE WE LOOPING?", has_loop)
+                    pc = play_context.copy()
+
+                    if not callback_sent:
+                        display.debug("sending task start callback, copying the task so we can template it temporarily")
+                        saved_name = task.name
+                        display.debug("done copying, going to template now")
+                        try:
+                            task.name = to_text(templar.template(task.name, fail_on_undefined=False), nonstring='empty')
+                            display.debug("done templating")
+                        except Exception:
+                            # just ignore any errors during task name templating,
+                            # we don't care if it just shows the raw name
+                            display.debug("templating failed for some reason")
+                        display.debug("here goes the callback...")
+                        if isinstance(task, Handler):
+                            self._tqm.send_callback('v2_playbook_on_handler_task_start', task)
+                        else:
+                            self._tqm.send_callback('v2_playbook_on_task_start', task, is_conditional=False)
+                        task.name = saved_name
+                        callback_sent = True
+                        display.debug("sending task start callback")
+
+                    cur_item = 0
+                    while True:
+                        item = None
+                        # setup loop variables in the task_vars if we're in a loop
+                        if has_loop:
+                            item = items[cur_item]
+                            #print("LOOP ITEM:", item)
+                            task_vars['ansible_loop_var'] = loop_control.loop_var
+                            task_vars[loop_control.loop_var] = item
+
+                            if loop_control.index_var:
+                                task_vars['ansible_index_var'] = loop_control.index_var
+                                task_vars[loop_control.index_var] = cur_item
+
+                            if loop_control.extended:
+                                items_len = len(items)
+                                task_vars['ansible_loop'] = {
+                                    'index': cur_item + 1,
+                                    'index0': cur_item,
+                                    'first': cur_item == 0,
+                                    'last': cur_item + 1 == items_len,
+                                    'length': items_len,
+                                    'revindex': items_len - cur_item,
+                                    'revindex0': items_len - cur_item - 1,
+                                }
+                                if loop_control.extended_allitems:
+                                    task_vars['ansible_loop']['allitems'] = items
+                                try:
+                                    task_vars['ansible_loop']['nextitem'] = items[cur_item + 1]
+                                except IndexError:
+                                    pass
+                                if cur_item - 1 >= 0:
+                                    task_vars['ansible_loop']['previtem'] = items[cur_item - 1]
+
+                        if task_action in C._ACTION_META:
+                            #print("DOING META FOR TASK:", task)
+                            # for the linear strategy, we run meta tasks just once and for
+                            # all hosts currently being iterated over rather than one host
+                            results.extend(self._execute_meta(task, play_context, iterator, host))
+                            if task.args.get('_raw_params', None) not in ('noop', 'reset_connection', 'end_host', 'role_complete', 'flush_handlers'):
+                                run_once = True
+                            if (task.any_errors_fatal or run_once) and not task.ignore_errors:
+                                any_errors_fatal = True
+                        elif task_action in C._ACTION_INCLUDE_TASKS:
+                            # if this task is a TaskInclude, we just return now with a success code so the
+                            # main thread can expand the task list for the given host
+                            include_args = task.args.copy()
+                            include_file = include_args.pop('_raw_params', None)
+                            if not include_file:
+                                # FIXME: handle properly
+                                #return dict(failed=True, msg="No include file was specified to the include")
+                                pass
+
+                            include_file = templar.template(include_file)
+                            # FIXME: handle properly
+                            #return dict(include=include_file, include_args=include_args)
+                        elif task_action in C._ACTION_INCLUDE_ROLE:
+                            # if this task is a IncludeRole, we just return now with a success code so the main thread can expand the task list for the given host
+                            include_args = task.args.copy()
+                            # FIXME: handle properly
+                            #return dict(include_args=include_args)
+                        else:
+                            # WAS _calculate_delegate_to
+                            # can (should) be moved to the base class for use in other strategies
+                            delegated_vars, delegated_host_name = self._variable_manager.get_delegated_vars_and_hostname(
+                                templar,
+                                task,
+                                task_vars,
+                            )
+                            # At the point this is executed it is safe to mutate self._task,
+                            # since `self._task` is either a copy referred to by `tmp_task` in `_run_loop`
+                            # or just a singular non-looped task
+                            if delegated_host_name:
+                                task.delegate_to = delegated_host_name
+                                task_vars.update(delegated_vars)
+                            # END _calculate_delegate_to
+
+                            context_validation_error = None
                             try:
-                                task.name = to_text(templar.template(task.name, fail_on_undefined=False), nonstring='empty')
-                                display.debug("done templating")
-                            except Exception:
-                                # just ignore any errors during task name templating,
-                                # we don't care if it just shows the raw name
-                                display.debug("templating failed for some reason")
-                            display.debug("here goes the callback...")
-                            if isinstance(task, Handler):
-                                self._tqm.send_callback('v2_playbook_on_handler_task_start', task)
-                            else:
-                                self._tqm.send_callback('v2_playbook_on_task_start', task, is_conditional=False)
-                            task.name = saved_name
-                            callback_sent = True
-                            display.debug("sending task start callback")
+                                # TODO: remove play_context as this does not take delegation nor loops correctly into account,
+                                # the task itself should hold the correct values for connection/shell/become/terminal plugin options to finalize.
+                                #  Kept for now for backwards compatibility and a few functions that are still exclusive to it.
 
-                        self._blocked_hosts[host.get_name()] = True
-                        self._queue_task(host, task, task_vars, play_context)
-                        del task_vars
+                                # apply the given task's information to the connection info,
+                                # which may override some fields already set by the play or
+                                # the options specified on the command line
+                                pc = pc.set_task_and_variable_override(task=task, variables=task_vars, templar=templar)
+
+                                # fields set from the play/task may be based on variables, so we have to
+                                # do the same kind of post validation step on it here before we use it.
+                                pc.post_validate(templar=templar)
+
+                                # now that the play context is finalized, if the remote_addr is not set
+                                # default to using the host's address field as the remote address
+                                if not pc.remote_addr:
+                                    pc.remote_addr = host.address
+
+                                # We also add "magic" variables back into the variables dict to make sure
+                                # FIXME: THIS DOES NOT SEEM RIGHT
+                                pc.update_vars(task_vars)
+
+                            except AnsibleError as e:
+                                # save the error, which we'll raise later if we don't end up
+                                # skipping this task during the conditional evaluation step
+                                context_validation_error = e
+
+                            # Evaluate the conditional (if any) for this task, which we do before running
+                            # the final task post-validation. We do this before the post validation due to
+                            # the fact that the conditional may specify that the task be skipped due to a
+                            # variable not being present which would otherwise cause validation to fail
+                            try:
+                                conditional_result, false_condition = task.evaluate_conditional_with_result(templar, task_vars)
+                                if not conditional_result:
+                                    display.debug("when evaluation is False, skipping this task")
+                                    # FIXME: need to insert result into task_results
+                                    continue
+                            except AnsibleError as e:
+                                # FIXME: need to insert result into task_results and mark host failed
+                                # loop error takes precedence
+                                if loop_eval_error is not None:
+                                    # Display the error from the conditional as well to prevent
+                                    # losing information useful for debugging.
+                                    display.v(to_text(e))
+                                continue
+
+                            # Not skipping, if we had loop error raised earlier we need to raise it now to halt the execution of this task
+                            if loop_eval_error is not None:
+                                # FIXME: need to insert result into task_results and mark host failed
+                                continue
+
+                            # if we ran into an error while setting up the PlayContext, raise it now, unless is known issue with delegation
+                            # and undefined vars (correct values are in cvars later on and connection plugins, if still error, blows up there)
+                            if context_validation_error is not None:
+                                raiseit = True
+                                if task.delegate_to:
+                                    if isinstance(context_validation_error, AnsibleUndefinedVariable):
+                                        raiseit = False
+                                    elif isinstance(context_validation_error, AnsibleParserError):
+                                        # parser error, might be cause by undef too
+                                        orig_exc = getattr(context_validation_error, 'orig_exc', None)
+                                        if isinstance(orig_exc, AnsibleUndefinedVariable):
+                                            raiseit = False
+                                if raiseit:
+                                    # FIXME: need to insert result into task_results and mark host failed
+                                    continue
+
+                            # handle step if needed, skip meta actions as they are used internally
+                            if self._step and choose_step:
+                                if self._take_step(task):
+                                    choose_step = False
+                                else:
+                                    skip_rest = True
+                                    break
+
+                            # Now we do final validation on the task, which sets all fields to their final values.
+                            try:
+                                final_task = task.copy()
+                                final_task.post_validate(templar=templar)
+                            except AnsibleError:
+                                raise
+                            except Exception:
+                                #return dict(changed=False, failed=True, _ansible_no_log=no_log, exception=to_text(traceback.format_exc()))
+                                raise
+
+                            self._blocked_hosts[host.get_name()] = True
+                            #print("QUEUEING TASK")
+                            self._queue_task(host, final_task, task_vars, pc, templar, item)
+
+                        # if we had no loop items, or if we've run out of items we're done
+                        if not has_loop or cur_item >= len(items) - 1:
+                            #print("DONE WITH LOOP (or not)")
+                            break
+
+                        # otherwise move on to the next item in the loop
+                        cur_item += 1
+
 
                     # if we're bypassing the host loop, break out now
                     if run_once:
                         break
 
+                    # cleanup task vars, as we no longer need them
+                    del task_vars
+
+                    # do in-flight process result handling to make sure things aren't
+                    # queueing up too badly while we're sending out jobs to workers
                     results.extend(self._process_pending_results(iterator, max_passes=max(1, int(len(self._tqm._workers) * 0.1))))
 
                 # go to next host/task group

@@ -29,7 +29,7 @@ import threading
 import time
 import typing as t
 
-from collections import deque
+from collections import deque, namedtuple
 from multiprocessing import Lock
 
 from jinja2.exceptions import UndefinedError
@@ -54,6 +54,7 @@ from ansible.plugins import loader as plugin_loader
 from ansible.template import Templar
 from ansible.utils.display import Display
 from ansible.utils.fqcn import add_internal_fqcns
+from ansible.utils.listify import listify_lookup_plugin_terms
 from ansible.utils.unsafe_proxy import wrap_var
 from ansible.utils.vars import combine_vars, isidentifier
 from ansible.vars.clean import strip_internal_keys, module_response_deepcopy
@@ -75,6 +76,13 @@ class StrategySentinel:
 
 _sentinel = StrategySentinel()
 
+
+
+# a pool of connections, where the key is the host name and the
+# value of the dict is a namedtuple containing the plugin type as
+# well as the loaded plugin value 
+CONNECTION_POOL_ENTRY = namedtuple("ConnectionPoolEntry", "connection_type connection_plugin")
+CONNECTION_POOL = {}
 
 def post_process_whens(result, task, templar, task_vars):
     cond = None
@@ -174,7 +182,12 @@ def debug_closure(func):
         for result in results:
             task = result._task
             host = result._host
-            _queued_task_args = self._queued_task_cache.pop((host.name, task._uuid), None)
+            item = None
+            loop_var = result._result.get('ansible_loop_var', None)
+            if loop_var:
+                item = result._result.get(loop_var)
+            _queued_task_args = self._queued_task_cache.pop((host.name, task._uuid, item), None)
+            #print("IN DEBUG CLOSURE, QUEUED TASK ARGS:", _queued_task_args)
             task_vars = _queued_task_args['task_vars']
             play_context = _queued_task_args['play_context']
             # Try to grab the previous host state, if it doesn't exist use get_host_state to generate an empty state
@@ -348,7 +361,7 @@ class StrategyBase:
         vars['ansible_current_hosts'] = self.get_hosts_remaining(play)
         vars['ansible_failed_hosts'] = self.get_failed_hosts(play)
 
-    def _queue_task(self, host, task, task_vars, play_context):
+    def _queue_task(self, host, task, task_vars, play_context, templar, loop_item=None):
         ''' handles queueing the task up to be sent to a worker '''
 
         display.debug("entering _queue_task() for %s/%s" % (host.name, task.action))
@@ -368,14 +381,6 @@ class StrategyBase:
             display.debug('Creating lock for %s' % task.action)
             action_write_locks.action_write_locks[task.action] = Lock()
 
-        # create a templar and template things we need later for the queuing process
-        templar = Templar(loader=self._loader, variables=task_vars)
-
-        try:
-            throttle = int(templar.template(task.throttle))
-        except Exception as e:
-            raise AnsibleError("Failed to convert the throttle value to an integer.", obj=task._ds, orig_exc=e)
-
         # and then queue the new task
         try:
             # Determine the "rewind point" of the worker list. This means we start
@@ -384,13 +389,13 @@ class StrategyBase:
             # by the forks or serial setting), however a task/block/play may "throttle"
             # that limit down.
             rewind_point = len(self._workers)
-            if throttle > 0 and self.ALLOW_BASE_THROTTLING:
+            if task.throttle > 0 and self.ALLOW_BASE_THROTTLING:
                 if task.run_once:
                     display.debug("Ignoring 'throttle' as 'run_once' is also set for '%s'" % task.get_name())
                 else:
-                    if throttle <= rewind_point:
-                        display.debug("task: %s, throttle: %d" % (task.get_name(), throttle))
-                        rewind_point = throttle
+                    if task.throttle <= rewind_point:
+                        display.debug("task: %s, throttle: %d" % (task.get_name(), task.throttle))
+                        rewind_point = task.throttle
 
             queued = False
             starting_worker = self._cur_worker
@@ -400,7 +405,7 @@ class StrategyBase:
 
                 worker_prc = self._workers[self._cur_worker]
                 if worker_prc is None or not worker_prc.is_alive():
-                    self._queued_task_cache[(host.name, task._uuid)] = {
+                    self._queued_task_cache[(host.name, task._uuid, loop_item)] = {
                         'host': host,
                         'task': task,
                         'task_vars': task_vars,
@@ -409,7 +414,16 @@ class StrategyBase:
 
                     # Pass WorkerProcess its strategy worker number so it can send an identifier along with intra-task requests
                     worker_prc = WorkerProcess(
-                        self._final_q, task_vars, host, task, play_context, self._loader, self._variable_manager, plugin_loader, self._cur_worker,
+                        self._final_q,
+                        task_vars,
+                        host,
+                        task,
+                        play_context,
+                        self._loader,
+                        self._variable_manager,
+                        plugin_loader,
+                        CONNECTION_POOL,
+                        self._cur_worker,
                     )
                     self._workers[self._cur_worker] = worker_prc
                     self._tqm.send_callback('v2_runner_on_start', host, task)
@@ -489,7 +503,12 @@ class StrategyBase:
 
         if isinstance(task_result._task, string_types):
             # If the value is a string, it is ``Task._uuid``
-            queue_cache_entry = (task_result._host.name, task_result._task)
+            item = None
+            loop_var = task_result._result.get('ansible_loop_var', None)
+            if loop_var:
+                item = task_result._result.get(loop_var)
+            #print("TASK RESULT:", task_result._result)
+            queue_cache_entry = (task_result._host.name, task_result._task, item)
             try:
                 found_task = self._queued_task_cache[queue_cache_entry]['task']
             except KeyError:
@@ -1129,6 +1148,56 @@ class StrategyBase:
                     if r._host not in self._active_connections:
                         self._active_connections[r._host] = socket_path
 
+    def _get_loop_items(self, task, templar, variables):
+        '''
+        Loads a lookup plugin to handle the with_* portion of a task (if specified),
+        and returns the items result.
+        '''
+
+        # get search path for this task to pass to lookup plugins
+        variables['ansible_search_path'] = task.get_search_path()
+
+        # ensure basedir is always in (dwim already searches here but we need to display it)
+        if self._loader.get_basedir() not in variables['ansible_search_path']:
+            variables['ansible_search_path'].append(self._loader.get_basedir())
+
+        items = []
+        if task.loop_with:
+            if task.loop_with in plugin_loader.lookup_loader:
+
+                # TODO: hardcoded so it fails for non first_found lookups, but thhis shoudl be generalized for those that don't do their own templating
+                # lookup prop/attribute?
+                fail = bool(task.loop_with != 'first_found')
+                loop_terms = listify_lookup_plugin_terms(terms=task.loop, templar=templar, fail_on_undefined=fail, convert_bare=False)
+
+                # get lookup
+                mylookup = plugin_loader.lookup_loader.get(task.loop_with, loader=self._loader, templar=templar)
+
+                # give lookup task 'context' for subdir (mostly needed for first_found)
+                for subdir in ['template', 'var', 'file']:  # TODO: move this to constants?
+                    if subdir in task.action:
+                        break
+                setattr(mylookup, '_subdir', subdir + 's')
+
+                # run lookup
+                items = wrap_var(mylookup.run(terms=loop_terms, variables=variables, wantlist=True))
+            else:
+                raise AnsibleError("Unexpected failure in finding the lookup named '%s' in the available lookup plugins" % task.loop_with)
+
+        elif task.loop is not None:
+            items = templar.template(task.loop)
+            if not isinstance(items, list):
+                raise AnsibleError(
+                    "Invalid data passed to 'loop', it requires a list, got this instead: %s."
+                    " Hint: If you passed a list/dict of just one element,"
+                    " try adding wantlist=True to your lookup invocation or use q/query instead of lookup." % items
+                )
+        else:
+            # there is no loop
+            return None
+
+        return items
+    
 
 class NextAction(object):
     """ The next action after an interpreter's exit. """
@@ -1241,3 +1310,4 @@ class Debugger(cmd.Cmd):
             self.execute(line)
         except Exception:
             pass
+
